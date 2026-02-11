@@ -81,6 +81,7 @@ class Everything:
         self.dll.Everything_GetResultFileNameW.restype = ctypes.c_wchar_p
         self.dll.Everything_GetResultPathW.argtypes = [ctypes.c_uint32]
         self.dll.Everything_GetResultPathW.restype = ctypes.c_wchar_p
+        self.dll.Everything_SetMax.argtypes = [ctypes.c_uint32]
 
     def search(self, query, max_results=20):
         with self.lock:

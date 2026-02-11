@@ -1,6 +1,5 @@
 import sys
 import os
-import keyboard
 import threading
 import ctypes
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QEvent
@@ -21,7 +20,8 @@ from src.core.everything import everything_client
 from src.core.app_scanner import app_scanner
 from src.core.config import config_manager
 from src.ui.settings_window import SettingsWindow
-from src.plugins.calculator import CalculatorPlugin
+from src.core.plugin_manager import plugin_manager
+from src.core.hotkey_manager import HotkeyManager
 
 
 class SearchThread(QThread):
@@ -51,7 +51,7 @@ class SearchWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.plugin_mode = None
-        self.calculator_plugin = CalculatorPlugin()
+        self.plugin_mode = None
 
         self.logo_path = self.resolve_resource_path("logo.png")
 
@@ -99,7 +99,7 @@ class SearchWindow(QMainWindow):
 
         # Search Bar
         self.search_bar = QLineEdit()
-        self.search_bar.setPlaceholderText("Search...")
+        self.search_bar.setPlaceholderText("在此处搜索...")
         self.search_bar.textChanged.connect(self.on_search_query)
         self.search_bar.returnPressed.connect(self.on_enter_pressed)
         layout.addWidget(self.search_bar)
@@ -127,54 +127,74 @@ class SearchWindow(QMainWindow):
         qss = f"""
             QWidget {{
                 background-color: {theme["window_bg"]};
-                border-radius: 10px;
+                border-radius: 12px;
                 border: 1px solid {theme["border"]};
                 color: {theme["text_color"]};
+                font-family: "Microsoft YaHei UI", sans-serif;
             }}
             QLineEdit {{
                 background-color: {theme["input_bg"]};
-                border: none;
-                border-radius: 5px;
-                padding: 10px;
+                border: 1px solid {theme["border"]};
+                border-radius: 8px;
+                padding: 12px 16px;
                 font-size: 18px;
-                selection-background-color: {theme["highlight"]};
                 color: {theme["text_color"]};
+                selection-background-color: {theme["selection_bg"]};
+                selection-color: {theme["selection_text"]};
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {theme["highlight"]};
             }}
             QListWidget {{
                 background-color: transparent;
                 border: none;
                 outline: none;
+                margin-top: 5px;
             }}
             QListWidget::item {{
-                padding: 8px;
-                border-radius: 5px;
+                padding: 12px;
+                border-radius: 8px;
                 color: {theme["text_color"]};
+                margin-bottom: 2px;
             }}
             QListWidget::item:selected {{
-                background-color: {theme["highlight"]};
+                background-color: {theme["selection_bg"]};
+                color: {theme["selection_text"]};
+            }}
+            QListWidget::item:hover:!selected {{
+                background-color: {theme["selection_bg"]}40;
             }}
             QMenu {{
-                background-color: {theme["window_bg"]};
+                background-color: {theme["input_bg"]};
                 color: {theme["text_color"]};
                 border: 1px solid {theme["border"]};
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 8px 24px;
+                border-radius: 4px;
             }}
             QMenu::item:selected {{
-                background-color: {theme["highlight"]};
+                background-color: {theme["selection_bg"]};
+                color: {theme["selection_text"]};
             }}
             QScrollBar:vertical {{
                 border: none;
-                background: {theme["scrollbar_bg"]};
-                width: 10px;
-                margin: 0px 0px 0px 0px;
+                background: transparent;
+                width: 8px;
+                margin: 2px;
             }}
             QScrollBar::handle:vertical {{
                 background: {theme["scrollbar_handle"]};
+                border-radius: 4px;
                 min-height: 20px;
-                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {theme["highlight"]};
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                border: none;
-                background: none;
+                height: 0px;
             }}
         """
         self.central_widget.setStyleSheet(qss)
@@ -234,11 +254,11 @@ class SearchWindow(QMainWindow):
 
         menu = QMenu()
 
-        settings_action = QAction("Settings", self)
+        settings_action = QAction("设置", self)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
 
-        quit_action = QAction("Quit", self)
+        quit_action = QAction("退出", self)
         quit_action.triggered.connect(QApplication.instance().quit)
         menu.addAction(quit_action)
 
@@ -251,10 +271,10 @@ class SearchWindow(QMainWindow):
         self.settings_window.show()
 
     def init_hotkey(self):
-        try:
-            keyboard.add_hotkey("alt+q", self.toggle_signal.emit, suppress=True)
-        except ImportError:
-            print("Keyboard module failed.")
+        self.hotkey_manager = HotkeyManager()
+        result = self.hotkey_manager.register("alt+q", self.toggle_signal.emit)
+        if result == -1:
+            print("[SearchWindow] Failed to register Alt+Q hotkey")
 
     def toggle_visibility(self):
         if self.isVisible():
@@ -318,17 +338,18 @@ class SearchWindow(QMainWindow):
 
         # Check for plugin trigger manually here
         text = self.search_bar.text().strip()
-        if text == "c":
-            item = QListWidgetItem("Calculator Mode")
-            item.setData(
-                Qt.ItemDataRole.UserRole,
-                {"type": "plugin_trigger", "plugin": "calculator"},
-            )
-            icon = self.style().standardIcon(
-                self.style().StandardPixmap.SP_ArrowRight
-            )  # Or similar
-            item.setIcon(icon)
-            self.result_list.addItem(item)
+        for plugin in plugin_manager.get_plugins(enabled_only=True):
+            if text in plugin.get_keywords():
+                item = QListWidgetItem(f"{plugin.get_name()} Mode")
+                item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    {"type": "plugin_trigger", "plugin": plugin},
+                )
+                icon = self.style().standardIcon(
+                    self.style().StandardPixmap.SP_ArrowRight
+                )
+                item.setIcon(icon)
+                self.result_list.addItem(item)
 
         for item in results:
             widget_item = QListWidgetItem(item["name"])
@@ -336,10 +357,12 @@ class SearchWindow(QMainWindow):
 
             if item.get("type") == "app":
                 widget_item.setText(f"[App] {item['name']}")
-            elif item.get("type") == "calc_result":
+            elif item.get("type") in ["calc_result", "copy_result"]:
                 pass  # Already formatted in name
-            elif item.get("type") == "calc_error":
+            elif item.get("type") in ["calc_error", "error"]:
                 widget_item.setForeground(Qt.GlobalColor.red)
+            elif item.get("type") == "sys_cmd":
+                widget_item.setForeground(Qt.GlobalColor.cyan)
             else:
                 if "path" in item:
                     widget_item.setText(f"{item['name']}   ({item['path']})")
@@ -354,8 +377,6 @@ class SearchWindow(QMainWindow):
         # Calculator might show result immediately.
 
     def on_enter_pressed(self):
-        text = self.search_bar.text().strip()
-
         # Check for Plugin trigger
         if not self.plugin_mode:
             # Removed hardcoded check, relying on selected item
@@ -372,21 +393,21 @@ class SearchWindow(QMainWindow):
 
     def handle_item_action(self, data):
         if data.get("type") == "plugin_trigger":
-            if data["plugin"] == "calculator":
-                self.plugin_mode = self.calculator_plugin
-                self.search_bar.clear()
-                self.search_bar.setPlaceholderText(
-                    "Calculator Mode (Type expression...)"
-                )
-                self.plugin_mode.on_enter()
-                self.result_list.clear()
-        elif data.get("type") == "calc_result":
+            self.plugin_mode = data["plugin"]
+            self.search_bar.clear()
+            self.search_bar.setPlaceholderText(
+                f"{self.plugin_mode.get_name()} 模式 ({self.plugin_mode.get_description()})"
+            )
+            self.plugin_mode.on_enter()
+            self.result_list.clear()
+        elif data.get("type") in ["calc_result", "copy_result"]:
             # Copy result to clipboard
             QApplication.clipboard().setText(data["path"])
-            # Maybe show a message?
-            self.search_bar.setText(
-                data["path"]
-            )  # Replace input with result for further calc?
+            if self.plugin_mode:
+                self.search_bar.setText(data["path"])
+        elif data.get("type") == "sys_cmd":
+            self.plugin_mode.handle_action(data["path"])
+            self.hide()
         elif data.get("path"):
             self.launch_item(data["path"])
 
@@ -405,21 +426,21 @@ class SearchWindow(QMainWindow):
         menu = QMenu(self)
 
         if data.get("type") == "calc_result":
-            copy_action = QAction("Copy Result", self)
+            copy_action = QAction("复制结果", self)
             copy_action.triggered.connect(
                 lambda: QApplication.clipboard().setText(path)
             )
             menu.addAction(copy_action)
         elif path:
-            open_action = QAction("Open", self)
+            open_action = QAction("打开", self)
             open_action.triggered.connect(lambda: self.launch_item(path))
             menu.addAction(open_action)
 
-            open_folder_action = QAction("Open Containing Folder", self)
+            open_folder_action = QAction("打开所在文件夹", self)
             open_folder_action.triggered.connect(lambda: self.open_folder(path))
             menu.addAction(open_folder_action)
 
-            copy_path_action = QAction("Copy Path", self)
+            copy_path_action = QAction("复制路径", self)
             copy_path_action.triggered.connect(
                 lambda: QApplication.clipboard().setText(path)
             )

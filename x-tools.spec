@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[('Everything64.dll', '.')],
-    datas=[('logo.png', '.')],
+    datas=[('logo.png', '.'), ('src/ui/check.svg', 'src/ui'), ('src/plugins', 'src/plugins')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

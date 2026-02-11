@@ -5,7 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "keyboard>=0.13.5",
     "pillow>=12.1.0",
     "pyqt6>=6.10.2",
     "pywin32>=311",

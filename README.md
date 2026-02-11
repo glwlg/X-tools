@@ -58,24 +58,28 @@ uv run main.py
 
 ## 🔌 插件系统
 
-x-tools 拥有一个可扩展的插件系统，允许开发者轻松添加自定义功能。当前已内置 **计算器插件**。
+x-tools 拥有一个可扩展的插件系统，支持**自动发现**加载插件。
+
+### 内置插件
+-   **计算器 (`c`)**：进行数学运算，支持复制结果。
+-   **时间戳工具 (`t`)**：Unix 时间戳与日期互转，支持 `now`。
+-   **Base64 转换 (`b`)**：文本的 Base64 编码与解码。
+-   **系统命令 (`sys`)**：执行系统操作（如 `lock`, `sleep`, `empty`）。
 
 ### 如何使用
-- 在搜索框输入特定的 **触发词**（例如 `c`）。
-- 从结果列表中选择对应的插件模式（例如 `Calculator Mode`）并按 `回车`。
+- 在搜索框输入特定的 **触发词**（例如 `t`）。
+- 从结果列表中选择对应的插件模式（例如 `Timestamp Converter Mode`）并按 `回车`。
 - 进入插件模式后，搜索框将变为专用输入框。按 `Esc` 可退出插件模式返回常规搜索。
 
 ### 核心架构
-插件基于 `src/core/plugin_base.py` 中的 `PluginBase` 基类构建，主要包含以下接口：
-- `get_keywords()`: 返回触发该插件的关键字。
-- `execute(query)`: 处理用户的输入并返回结果列表。
-- `on_enter()` / `on_exit()`: 插件模式切换时的生命周期钩子。
+插件系统基于**自动扫描**机制。`src/core/plugin_manager.py` 会自动扫描 `src/plugins` 目录并加载所有继承自 `PluginBase` 的类。
 
 ### 自定义开发
-您可以参照 `src/plugins/calculator.py` 编写自己的插件：
+您可以轻松扩展功能：
 1. 在 `src/plugins` 目录下新建 Python 文件。
-2. 继承 `PluginBase` 并实现相关逻辑。
-3. 在 `src/ui/search_window.py` 中实例化并注册您的插件。
+2. 继承 `src/core/plugin_base.py` 中的 `PluginBase`。
+3. 实现 `get_keywords()`, `execute()`, `get_name()`, `get_description()` 等方法。
+4. 重启应用，插件将自动激活。
 
 ## ⌨️ 快捷操作
 

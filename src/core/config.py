@@ -8,27 +8,33 @@ if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR)
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-DEFAULT_CONFIG = {"run_on_startup": False, "theme": "Dark"}
+DEFAULT_CONFIG = {"run_on_startup": False, "theme": "Dark", "plugins_enabled": {}}
 
 THEME_FILE = os.path.join(CONFIG_DIR, "themes.json")
 DEFAULT_THEMES = {
     "Dark": {
-        "window_bg": "#2D2D2D",
-        "input_bg": "#1E1E1E",
-        "text_color": "#FFFFFF",
+        "window_bg": "#1E1E1E",
+        "input_bg": "#2D2D2D",
+        "text_color": "#E0E0E0",
+        "text_dim": "#909090",
         "highlight": "#007ACC",
         "border": "#3E3E3E",
+        "selection_bg": "#094771",
+        "selection_text": "#FFFFFF",
         "scrollbar_bg": "transparent",
-        "scrollbar_handle": "#5A5A5A",
+        "scrollbar_handle": "#424242",
     },
     "Light": {
-        "window_bg": "#F0F0F0",
+        "window_bg": "#F5F5F5",
         "input_bg": "#FFFFFF",
-        "text_color": "#000000",
+        "text_color": "#212121",
+        "text_dim": "#757575",
         "highlight": "#0078D7",
-        "border": "#CCCCCC",
+        "border": "#DCDCDC",
+        "selection_bg": "#CCE8FF",
+        "selection_text": "#000000",
         "scrollbar_bg": "transparent",
-        "scrollbar_handle": "#AAAAAA",
+        "scrollbar_handle": "#C1C1C1",
     },
 }
 
@@ -65,15 +71,26 @@ class ConfigManager:
 
         try:
             with open(THEME_FILE, "r") as f:
-                # Merge with defaults to ensure keys exists
                 themes = json.load(f)
-                # Ensure defaults exist if file was partial
-                for k, v in DEFAULT_THEMES.items():
-                    if k not in themes:
-                        themes[k] = v
+                # Ensure all default themes and their keys exist
+                for theme_name, default_theme_data in DEFAULT_THEMES.items():
+                    if theme_name not in themes:
+                        themes[theme_name] = default_theme_data.copy()
+                    else:
+                        # Merge keys for existing themes
+                        for key, value in default_theme_data.items():
+                            if key not in themes[theme_name]:
+                                themes[theme_name][key] = value
                 return themes
         except:
             return DEFAULT_THEMES.copy()
+
+    def save_themes(self):
+        try:
+            with open(THEME_FILE, "w") as f:
+                json.dump(self.themes, f, indent=4)
+        except Exception as e:
+            print(f"Error saving themes: {e}")
 
     def get_theme(self, theme_name=None):
         if not theme_name:

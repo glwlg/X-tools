@@ -10,16 +10,16 @@ if os.path.exists("dist/x-tools"):
 
     try:
         shutil.rmtree("dist/x-tools")
-    except:
-        pass
+    except Exception as e:
+        print(f"Warning: Could not clean dist folder: {e}")
 
 if os.path.exists("build/x-tools"):
     import shutil
 
     try:
         shutil.rmtree("build/x-tools")
-    except:
-        pass
+    except Exception as e:
+        print(f"Warning: Could not clean build folder: {e}")
 
 icon_path = os.path.abspath("logo.ico")
 if not os.path.exists(icon_path):
@@ -33,6 +33,8 @@ PyInstaller.__main__.run(
         "--onedir",
         "--windowed",
         "--add-data=logo.png;.",
+        "--add-data=src/ui/check.svg;src/ui",
+        "--add-data=src/plugins;src/plugins",
         "--add-binary=Everything64.dll;.",
         "--clean",
         "--noconfirm",
