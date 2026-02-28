@@ -8,7 +8,18 @@ if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR)
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-DEFAULT_CONFIG = {"run_on_startup": False, "theme": "Dark", "plugins_enabled": {}}
+DEFAULT_HOTKEYS = {
+    "toggle_window": "alt+q",
+    "screenshot": "alt+a",
+    "pin_clipboard": "alt+v",
+}
+
+DEFAULT_CONFIG = {
+    "run_on_startup": False,
+    "theme": "Dark",
+    "plugins_enabled": {},
+    "hotkeys": DEFAULT_HOTKEYS.copy(),
+}
 
 THEME_FILE = os.path.join(CONFIG_DIR, "themes.json")
 DEFAULT_THEMES = {
@@ -92,10 +103,25 @@ class ConfigManager:
         except Exception as e:
             print(f"Error saving themes: {e}")
 
+    def get_theme_name(self):
+        return self.config.get("theme", "Dark")
+
     def get_theme(self, theme_name=None):
         if not theme_name:
             theme_name = self.config.get("theme", "Dark")
         return self.themes.get(theme_name, self.themes.get("Dark"))
+
+    def get_hotkey(self, action: str) -> str:
+        """Get the hotkey string for an action, falling back to default."""
+        hotkeys = self.config.get("hotkeys", {})
+        return hotkeys.get(action, DEFAULT_HOTKEYS.get(action, ""))
+
+    def set_hotkey(self, action: str, key_str: str):
+        """Set the hotkey string for an action and save."""
+        if "hotkeys" not in self.config:
+            self.config["hotkeys"] = DEFAULT_HOTKEYS.copy()
+        self.config["hotkeys"][action] = key_str
+        self.save_config()
 
     def set_startup(self, enable=True):
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"

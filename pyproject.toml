@@ -5,9 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "onnxruntime==1.19.2",
+    "opencv-python>=4.13.0.92",
     "pillow>=12.1.0",
     "pyqt6>=6.10.2",
+    "pyqt6-fluent-widgets>=1.11.1",
     "pywin32>=311",
+    "qrcode>=8.2",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [dependency-groups]

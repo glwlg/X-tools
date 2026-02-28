@@ -2,25 +2,27 @@ import sys
 import os
 import threading
 import ctypes
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QEvent
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QEvent, QTimer
+from PyQt6.QtGui import QAction, QIcon, QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
-    QMainWindow,
     QWidget,
     QVBoxLayout,
-    QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QSystemTrayIcon,
     QMenu,
+    QGraphicsDropShadowEffect,
 )
+from qfluentwidgets import SearchLineEdit, ListWidget, setTheme, Theme, isDarkTheme
+from qframelesswindow import AcrylicWindow
 
 from src.core.everything import everything_client
 from src.core.app_scanner import app_scanner
 from src.core.config import config_manager
 from src.ui.settings_window import SettingsWindow
 from src.core.plugin_manager import plugin_manager
+from src.ui.screenshot_overlay import ScreenshotOverlay
+from src.ui.pinned_image_window import PinnedImageWindow
 from src.core.hotkey_manager import HotkeyManager
 
 
@@ -32,36 +34,41 @@ class SearchThread(QThread):
         self.query = query
 
     def run(self):
-        # 1. Search Apps (In-memory, fast)
         app_results = app_scanner.search(self.query)
-
-        # 2. Search Files (Everything SDK)
         file_results = []
         if everything_client:
             file_results = everything_client.search(self.query)
-
-        # Combine
         results = app_results + file_results
         self.results_found.emit(results)
 
 
-class SearchWindow(QMainWindow):
+class SearchWindow(AcrylicWindow):
     toggle_signal = pyqtSignal()
+    screenshot_signal = pyqtSignal()
+    pin_clipboard_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.plugin_mode = None
-        self.plugin_mode = None
 
         self.logo_path = self.resolve_resource_path("logo.png")
+
+        self.setWindowFlags(
+            self.windowFlags() | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.titleBar.hide()
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.init_ui()
         self.init_tray()
         self.init_hotkey()
 
         self.toggle_signal.connect(self.toggle_visibility)
+        self.screenshot_signal.connect(self.trigger_screenshot)
+        self.pin_clipboard_signal.connect(self.pin_clipboard)
+        self.screenshot_overlay = None
+        self._pinned_windows = []
 
-        # Scan apps on startup
         threading.Thread(target=app_scanner.scan, daemon=True).start()
 
     def resolve_resource_path(self, filename):
@@ -73,131 +80,142 @@ class SearchWindow(QMainWindow):
             ]
         else:
             possible_paths = [os.path.join(os.getcwd(), filename)]
-
         for p in possible_paths:
             if os.path.exists(p):
                 return p
         return None
 
     def init_ui(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.container = QWidget(self)
+        self.container.setObjectName("searchContainer")
 
-        # Central Widget & Layout
-        self.central_widget = QWidget()
-        self.update_style()  # Apply theme
+        # Frame our custom container inside the window without the titlebar gap
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.container)
+
+        self._apply_fluent_theme()
 
         if self.logo_path:
             self.setWindowIcon(QIcon(self.logo_path))
 
-        layout = QVBoxLayout(self.central_widget)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout = QVBoxLayout(self.container)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
-        # Search Bar
-        self.search_bar = QLineEdit()
-        self.search_bar.setPlaceholderText("在此处搜索...")
+        self.search_bar = SearchLineEdit()
+        self.search_bar.setPlaceholderText("唤起各类高级工具、本地搜索与系统功能...")
+        self.search_bar.setFixedHeight(48)
         self.search_bar.textChanged.connect(self.on_search_query)
         self.search_bar.returnPressed.connect(self.on_enter_pressed)
+        self.search_bar.installEventFilter(self)
+        self.search_bar.clearButton.setStyleSheet("QToolButton { border-radius: 4px; }")
+
+        self._style_search_bar()
         layout.addWidget(self.search_bar)
 
-        # Install event filter on search bar to handle navigation keys
-        self.search_bar.installEventFilter(self)
-
-        # Result List
-        self.result_list = QListWidget()
+        self.result_list = ListWidget()
         self.result_list.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.result_list.itemClicked.connect(self.on_item_clicked)
-        # Initially hidden
+        self._style_result_list()
         self.result_list.hide()
         layout.addWidget(self.result_list)
 
-        self.setCentralWidget(self.central_widget)
-        # Apply initial size
-        self.adjust_size(expanded=False)
-        self.center_window()
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(40)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 50))
+        self.container.setGraphicsEffect(shadow)
 
-    def update_style(self):
-        theme = config_manager.get_theme()
-        qss = f"""
-            QWidget {{
-                background-color: {theme["window_bg"]};
-                border-radius: 12px;
-                border: 1px solid {theme["border"]};
-                color: {theme["text_color"]};
-                font-family: "Microsoft YaHei UI", sans-serif;
-            }}
-            QLineEdit {{
-                background-color: {theme["input_bg"]};
-                border: 1px solid {theme["border"]};
-                border-radius: 8px;
-                padding: 12px 16px;
+        self.adjust_size(expanded=False)
+        # Center with slight top-offset logic
+        QTimer.singleShot(50, self.center_window)
+
+    def _apply_fluent_theme(self):
+        theme_name = config_manager.get_theme_name()
+        if theme_name == "Dark":
+            setTheme(Theme.DARK)
+            self.windowEffect.setMicaEffect(self.winId(), isDarkMode=True)
+            self.setStyleSheet(
+                "#searchContainer { background-color: rgba(30, 30, 34, 180); border-radius: 12px; }"
+            )
+        else:
+            setTheme(Theme.LIGHT)
+            self.windowEffect.setMicaEffect(self.winId(), isDarkMode=False)
+            self.setStyleSheet(
+                "#searchContainer { background-color: rgba(250, 250, 252, 220); border-radius: 12px; }"
+            )
+
+    def _style_search_bar(self):
+        # Rely primarily on qfluentwidgets native drawing, just increase font size and remove border artifacts
+        self.search_bar.setStyleSheet("""
+            SearchLineEdit {
                 font-size: 18px;
-                color: {theme["text_color"]};
-                selection-background-color: {theme["selection_bg"]};
-                selection-color: {theme["selection_text"]};
-            }}
-            QLineEdit:focus {{
-                border: 1px solid {theme["highlight"]};
-            }}
-            QListWidget {{
-                background-color: transparent;
-                border: none;
-                outline: none;
-                margin-top: 5px;
-            }}
-            QListWidget::item {{
-                padding: 12px;
-                border-radius: 8px;
-                color: {theme["text_color"]};
-                margin-bottom: 2px;
-            }}
-            QListWidget::item:selected {{
-                background-color: {theme["selection_bg"]};
-                color: {theme["selection_text"]};
-            }}
-            QListWidget::item:hover:!selected {{
-                background-color: {theme["selection_bg"]}40;
-            }}
-            QMenu {{
-                background-color: {theme["input_bg"]};
-                color: {theme["text_color"]};
-                border: 1px solid {theme["border"]};
-                border-radius: 6px;
-                padding: 4px;
-            }}
-            QMenu::item {{
-                padding: 8px 24px;
-                border-radius: 4px;
-            }}
-            QMenu::item:selected {{
-                background-color: {theme["selection_bg"]};
-                color: {theme["selection_text"]};
-            }}
-            QScrollBar:vertical {{
                 border: none;
                 background: transparent;
-                width: 8px;
-                margin: 2px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {theme["scrollbar_handle"]};
-                border-radius: 4px;
-                min-height: 20px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {theme["highlight"]};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-        """
-        self.central_widget.setStyleSheet(qss)
+                border-bottom: none;
+            }
+            SearchLineEdit:focus {
+                border: none;
+                background: transparent;
+                border-bottom: none;
+            }
+        """)
+
+    def _style_result_list(self):
+        dark = isDarkTheme()
+        if dark:
+            qss = """
+                ListWidget {
+                    background-color: transparent; border: none; outline: none;
+                }
+                ListWidget::item {
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    color: #E2E4EB;
+                    font-size: 15px;
+                }
+                ListWidget::item:selected {
+                    background-color: rgba(76, 194, 255, 45);
+                    color: #FFFFFF;
+                }
+                ListWidget::item:hover:!selected {
+                    background-color: rgba(255, 255, 255, 15);
+                }
+            """
+        else:
+            qss = """
+                ListWidget {
+                    background-color: transparent; border: none; outline: none;
+                }
+                ListWidget::item {
+                    padding: 12px 16px;
+                    border-radius: 8px;
+                    color: #2C2C3A;
+                    font-size: 15px;
+                }
+                ListWidget::item:selected {
+                    background-color: rgba(68, 85, 238, 35);
+                    color: #1A1A2E;
+                }
+                ListWidget::item:hover:!selected {
+                    background-color: rgba(0, 0, 0, 10);
+                }
+            """
+        self.result_list.setStyleSheet(qss)
+
+    def update_style(self):
+        self._apply_fluent_theme()
+        self._style_search_bar()
+        self._style_result_list()
+
+        effect = self.graphicsEffect()
+        if isinstance(effect, QGraphicsDropShadowEffect):
+            effect.setColor(
+                QColor(0, 0, 0, 80) if isDarkTheme() else QColor(0, 0, 0, 40)
+            )
 
     def eventFilter(self, obj, event):
         if obj == self.search_bar and event.type() == QEvent.Type.KeyPress:
@@ -214,16 +232,11 @@ class SearchWindow(QMainWindow):
         count = self.result_list.count()
         if count == 0:
             return
-
-        current_row = self.result_list.currentRow()
-        next_row = current_row + direction
-
-        # Clamp selection
+        next_row = self.result_list.currentRow() + direction
         if next_row < 0:
             next_row = 0
         elif next_row >= count:
             next_row = count - 1
-
         self.result_list.setCurrentRow(next_row)
 
     def center_window(self):
@@ -234,26 +247,22 @@ class SearchWindow(QMainWindow):
 
     def adjust_size(self, expanded=True):
         if expanded:
-            self.setFixedSize(700, 500)
+            self.setFixedSize(700, 560)
             self.result_list.show()
         else:
-            self.setFixedSize(700, 80)  # Compact height
+            self.setFixedSize(700, 86)
             self.result_list.hide()
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-
-        if self.logo_path:
-            icon = QIcon(self.logo_path)
-        else:
-            icon = self.style().standardIcon(
-                self.style().StandardPixmap.SP_ComputerIcon
-            )
-
+        icon = (
+            QIcon(self.logo_path)
+            if self.logo_path
+            else self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
+        )
         self.tray_icon.setIcon(icon)
 
         menu = QMenu()
-
         settings_action = QAction("设置", self)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
@@ -268,13 +277,92 @@ class SearchWindow(QMainWindow):
     def open_settings(self):
         self.settings_window = SettingsWindow(config_manager)
         self.settings_window.settings_changed.connect(self.update_style)
+        self.settings_window.hotkeys_changed.connect(self.reload_hotkeys)
         self.settings_window.show()
 
     def init_hotkey(self):
         self.hotkey_manager = HotkeyManager()
-        result = self.hotkey_manager.register("alt+q", self.toggle_signal.emit)
-        if result == -1:
-            print("[SearchWindow] Failed to register Alt+Q hotkey")
+        self._register_hotkeys_from_config()
+        self.hotkey_manager.start()
+
+    def _register_hotkeys_from_config(self):
+        from src.core.config import config_manager
+
+        toggle_key = config_manager.get_hotkey("toggle_window")
+        if toggle_key:
+            self.hotkey_manager.register(toggle_key, self.toggle_signal.emit)
+
+        screenshot_key = config_manager.get_hotkey("screenshot")
+        if screenshot_key:
+            self.hotkey_manager.register(screenshot_key, self.screenshot_signal.emit)
+
+        pin_key = config_manager.get_hotkey("pin_clipboard")
+        if pin_key:
+            self.hotkey_manager.register(pin_key, self.pin_clipboard_signal.emit)
+
+    def reload_hotkeys(self):
+        self.hotkey_manager.restart()
+        self._register_hotkeys_from_config()
+        self.hotkey_manager.start()
+
+    def trigger_screenshot(self):
+        self.hide()
+        if not self.screenshot_overlay:
+            self.screenshot_overlay = ScreenshotOverlay()
+            self.screenshot_overlay.closed.connect(self.on_screenshot_closed)
+        self.screenshot_overlay.capture_screen()
+
+    def on_screenshot_closed(self):
+        pass
+
+    def pin_clipboard(self):
+        from PyQt6.QtGui import QPixmap, QImage, QColor, QPainter, QFontMetrics
+
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+
+        pixmap = None
+        if mime.hasImage():
+            image = clipboard.image()
+            if not image.isNull():
+                pixmap = QPixmap.fromImage(image)
+        elif mime.hasText():
+            text = mime.text().strip()
+            if text:
+                font = QFont("Microsoft YaHei UI", 14)
+                fm = QFontMetrics(font)
+                padding = 24
+                lines = text.split("\n")
+                line_height = fm.height()
+                max_width = max(fm.horizontalAdvance(line) for line in lines)
+                img_w = min(max_width + padding * 2, 800)
+                img_h = line_height * len(lines) + padding * 2
+
+                image = QImage(img_w, img_h, QImage.Format.Format_ARGB32)
+                image.fill(QColor(36, 38, 48, 230))
+
+                painter = QPainter(image)
+                painter.setFont(font)
+                painter.setPen(QColor(240, 240, 240))
+                y = padding + fm.ascent()
+                for line in lines:
+                    painter.drawText(padding, y, line)
+                    y += line_height
+                painter.end()
+
+                pixmap = QPixmap.fromImage(image)
+
+        if pixmap and not pixmap.isNull():
+            pin_win = PinnedImageWindow(pixmap)
+            screen = QApplication.primaryScreen()
+            if screen:
+                sg = screen.geometry()
+                pin_win.move(
+                    (sg.width() - pixmap.width()) // 2,
+                    (sg.height() - pixmap.height()) // 2,
+                )
+            pin_win.show()
+            self._pinned_windows.append(pin_win)
 
     def toggle_visibility(self):
         if self.isVisible():
@@ -284,7 +372,6 @@ class SearchWindow(QMainWindow):
             self.activateWindow()
             self.raise_()
 
-            # Force focus
             try:
                 hwnd = int(self.winId())
                 foreground_window = ctypes.windll.user32.GetForegroundWindow()
@@ -336,36 +423,48 @@ class SearchWindow(QMainWindow):
     def update_results(self, results):
         self.result_list.clear()
 
-        # Check for plugin trigger manually here
         text = self.search_bar.text().strip()
         for plugin in plugin_manager.get_plugins(enabled_only=True):
             if text in plugin.get_keywords():
-                item = QListWidgetItem(f"{plugin.get_name()} Mode")
-                item.setData(
-                    Qt.ItemDataRole.UserRole,
-                    {"type": "plugin_trigger", "plugin": plugin},
-                )
-                icon = self.style().standardIcon(
-                    self.style().StandardPixmap.SP_ArrowRight
-                )
-                item.setIcon(icon)
-                self.result_list.addItem(item)
+                if hasattr(plugin, "is_direct_action") and plugin.is_direct_action():
+                    for res in plugin.execute(text):
+                        item = QListWidgetItem(res["name"])
+                        res["plugin"] = plugin
+                        item.setData(Qt.ItemDataRole.UserRole, res)
+                        item.setIcon(
+                            self.style().standardIcon(
+                                self.style().StandardPixmap.SP_CommandLink
+                            )
+                        )
+                        self.result_list.addItem(item)
+                else:
+                    item = QListWidgetItem(f"{plugin.get_name()} 专清模式")
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        {"type": "plugin_trigger", "plugin": plugin},
+                    )
+                    item.setIcon(
+                        self.style().standardIcon(
+                            self.style().StandardPixmap.SP_ArrowRight
+                        )
+                    )
+                    self.result_list.addItem(item)
 
         for item in results:
             widget_item = QListWidgetItem(item["name"])
             widget_item.setData(Qt.ItemDataRole.UserRole, item)
 
             if item.get("type") == "app":
-                widget_item.setText(f"[App] {item['name']}")
+                widget_item.setText(f"🖥️  {item['name']}")
             elif item.get("type") in ["calc_result", "copy_result"]:
-                pass  # Already formatted in name
+                pass
             elif item.get("type") in ["calc_error", "error"]:
                 widget_item.setForeground(Qt.GlobalColor.red)
             elif item.get("type") == "sys_cmd":
-                widget_item.setForeground(Qt.GlobalColor.cyan)
+                widget_item.setForeground(QColor(108, 114, 230))
             else:
                 if "path" in item:
-                    widget_item.setText(f"{item['name']}   ({item['path']})")
+                    widget_item.setText(f"📄  {item['name']}   ({item['path']})")
 
             self.result_list.addItem(widget_item)
 
@@ -373,16 +472,8 @@ class SearchWindow(QMainWindow):
             self.result_list.setCurrentRow(0)
             if self.result_list.isHidden():
                 self.adjust_size(expanded=True)
-        # In plugin mode, maybe always expand or context dependant?
-        # Calculator might show result immediately.
 
     def on_enter_pressed(self):
-        # Check for Plugin trigger
-        if not self.plugin_mode:
-            # Removed hardcoded check, relying on selected item
-            pass
-
-        # Launch Item
         if self.result_list.currentItem():
             data = self.result_list.currentItem().data(Qt.ItemDataRole.UserRole)
             self.handle_item_action(data)
@@ -396,24 +487,32 @@ class SearchWindow(QMainWindow):
             self.plugin_mode = data["plugin"]
             self.search_bar.clear()
             self.search_bar.setPlaceholderText(
-                f"{self.plugin_mode.get_name()} 模式 ({self.plugin_mode.get_description()})"
+                f"已进入 {self.plugin_mode.get_name()} (按 ESC 退出)"
             )
             self.plugin_mode.on_enter()
             self.result_list.clear()
         elif data.get("type") in ["calc_result", "copy_result"]:
-            # Copy result to clipboard
             QApplication.clipboard().setText(data["path"])
             if self.plugin_mode:
                 self.search_bar.setText(data["path"])
         elif data.get("type") == "sys_cmd":
             self.plugin_mode.handle_action(data["path"])
             self.hide()
+        elif data.get("type") == "qr_generate":
+            self.plugin_mode.handle_action(data["path"])
+            self.hide()
+        elif data.get("type") == "hosts_cmd":
+            plugin = data.get("plugin")
+            if plugin:
+                plugin.handle_action(data["path"])
+            else:
+                self.plugin_mode.handle_action(data["path"])
+            self.hide()
         elif data.get("path"):
             self.launch_item(data["path"])
 
     def on_item_clicked(self, item):
-        data = item.data(Qt.ItemDataRole.UserRole)
-        self.handle_item_action(data)
+        self.handle_item_action(item.data(Qt.ItemDataRole.UserRole))
 
     def contextMenuEvent(self, event):
         item = self.result_list.itemAt(event.pos())
@@ -422,7 +521,6 @@ class SearchWindow(QMainWindow):
 
         data = item.data(Qt.ItemDataRole.UserRole)
         path = data.get("path")
-
         menu = QMenu(self)
 
         if data.get("type") == "calc_result":
@@ -466,24 +564,19 @@ class SearchWindow(QMainWindow):
             except Exception as e:
                 print(f"Error launching {path}: {e}")
 
-    # Events
     def focusOutEvent(self, event):
-        # Don't hide if settings window is active or context menu?
-        # But focusOut is for this window. Settiings is separate.
-        # If settings is open, we might want to keep SearchWindow open?
-        # User said "hide by esc". But let's keep focus out behavior unless plugin mode override?
-        # "按esc退出插件，再按esc才会隐藏窗口" - implies strict control logic for Esc.
         self.hide()
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             if self.plugin_mode:
-                # Exit plugin mode
                 self.plugin_mode.on_exit()
                 self.plugin_mode = None
                 self.search_bar.clear()
-                self.search_bar.setPlaceholderText("Search...")
+                self.search_bar.setPlaceholderText(
+                    "唤起各类高级工具、本地搜索与系统功能..."
+                )
                 self.result_list.clear()
                 self.adjust_size(expanded=False)
             else:

@@ -22,6 +22,10 @@ class PluginBase(ABC):
         """Executes the plugin logic for a given query."""
         pass
 
+    def is_direct_action(self):
+        """Returns True if this plugin should display items directly in the main list instead of entering a mode first."""
+        return False
+
     @abstractmethod
     def on_enter(self):
         """Called when plugin mode is activated."""

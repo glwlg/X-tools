@@ -1,95 +1,258 @@
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QCheckBox,
     QLabel,
-    QComboBox,
-    QScrollArea,
-    QFrame,
-    QHBoxLayout,
-    QStackedWidget,
-    QListWidget,
-    QListWidgetItem,
-    QPlainTextEdit,
-    QPushButton,
     QMessageBox,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QSize
-from PyQt6.QtGui import QFont
+from qfluentwidgets import (
+    FluentWindow,
+    SettingCardGroup,
+    SwitchSettingCard,
+    PrimaryPushSettingCard,
+    PushSettingCard,
+    PlainTextEdit,
+    ScrollArea,
+    FluentIcon as FI,
+    SettingCard,
+    ComboBox,
+    setThemeColor,
+    NavigationItemPosition,
+    LargeTitleLabel,
+)
+from src.core.hotkey_manager import VK_MAP
+from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QKeyEvent, QIcon
 import os
 import json
 import sys
 
 
-class SettingsWindow(QWidget):
+class HotkeyRecordCard(PushSettingCard):
+    hotkey_changed = pyqtSignal(str)
+
+    def __init__(
+        self, title, action_key, config_manager, icon=FI.COMMAND_PROMPT, parent=None
+    ):
+        super().__init__("未设置", icon, title, "点击右侧按钮开始录制快捷键", parent)
+        self.config_manager = config_manager
+        self.action_key = action_key
+        self._recording = False
+
+        self.button.clicked.connect(self.start_recording)
+
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.load_hotkey()
+
+    def load_hotkey(self):
+        hk = self.config_manager.get_hotkey(self.action_key)
+        self._hotkey = hk
+        self._update_display()
+
+    def _update_display(self):
+        if self._recording:
+            self.button.setText("⏺ 录制中...")
+        elif self._hotkey:
+            self.button.setText(self._format_hotkey(self._hotkey))
+        else:
+            self.button.setText("未设置")
+
+    @staticmethod
+    def _format_hotkey(hotkey_str: str) -> str:
+        if not hotkey_str:
+            return ""
+        parts = hotkey_str.lower().split("+")
+        return " + ".join(p.strip().capitalize() for p in parts)
+
+    def start_recording(self):
+        self._recording = True
+        self._update_display()
+        self.setFocus()
+
+    def get_hotkey(self) -> str:
+        return self._hotkey
+
+    def set_hotkey(self, hotkey_str: str):
+        self._hotkey = hotkey_str
+        self._update_display()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if not self._recording:
+            super().keyPressEvent(event)
+            return
+
+        key = event.key()
+
+        if key in (
+            Qt.Key.Key_Control,
+            Qt.Key.Key_Alt,
+            Qt.Key.Key_Shift,
+            Qt.Key.Key_Meta,
+        ):
+            return
+
+        if key == Qt.Key.Key_Escape:
+            self._recording = False
+            self._update_display()
+            return
+
+        modifiers = event.modifiers()
+        parts = []
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            parts.append("ctrl")
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            parts.append("alt")
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("shift")
+        if modifiers & Qt.KeyboardModifier.MetaModifier:
+            parts.append("win")
+
+        key_char = event.text().lower()
+        key_name = None
+
+        if key_char and key_char in VK_MAP:
+            key_name = key_char
+        else:
+            for name, vk in VK_MAP.items():
+                qt_key_name = f"Key_{name.capitalize()}"
+                if hasattr(Qt.Key, qt_key_name) and getattr(Qt.Key, qt_key_name) == key:
+                    key_name = name
+                    break
+            if key_name is None:
+                for i in range(1, 13):
+                    if key == getattr(Qt.Key, f"Key_F{i}"):
+                        key_name = f"f{i}"
+                        break
+
+        if key_name is None:
+            return
+
+        if not parts and not key_name.startswith("f"):
+            return
+
+        parts.append(key_name)
+        new_hotkey = "+".join(parts)
+
+        self._hotkey = new_hotkey
+        self._recording = False
+        self._update_display()
+        self.hotkey_changed.emit(new_hotkey)
+
+    def focusOutEvent(self, event):
+        if self._recording:
+            self._recording = False
+            self._update_display()
+        super().focusOutEvent(event)
+
+
+class ScrollWidget(ScrollArea):
+    """A generic scrollable widget page for Settings"""
+
+    def __init__(self, title, obj_name, parent=None):
+        super().__init__(parent)
+        self.view = QWidget(self)
+        self.vBoxLayout = QVBoxLayout(self.view)
+
+        self.vBoxLayout.setContentsMargins(36, 20, 36, 36)
+        self.vBoxLayout.setSpacing(16)
+
+        self.titleLabel = LargeTitleLabel(title, self.view)
+        self.titleLabel.setObjectName("pageTitle")
+        # Give it a nice bold appearance and space below
+        font = self.titleLabel.font()
+        font.setPixelSize(28)
+        font.setBold(True)
+        self.titleLabel.setFont(font)
+        self.titleLabel.setStyleSheet("margin-bottom: 12px;")
+
+        self.vBoxLayout.addWidget(self.titleLabel)
+
+        self.setWidget(self.view)
+        self.setWidgetResizable(True)
+        self.setObjectName(obj_name)
+
+        self.setStyleSheet(
+            "ScrollWidget { background-color: transparent; border: none; } "
+            "QScrollArea { border: none; background-color: transparent; }"
+        )
+        self.view.setStyleSheet("QWidget { background-color: transparent; }")
+
+    def addGroup(self, group):
+        self.vBoxLayout.addWidget(group)
+
+    def addStretch(self):
+        self.vBoxLayout.addStretch(1)
+
+
+class SettingsWindow(FluentWindow):
     settings_changed = pyqtSignal()
+    hotkeys_changed = pyqtSignal()
 
     def __init__(self, config_manager, parent=None):
-        super().__init__()
+        super().__init__(parent)
         self.config_manager = config_manager
-        self.check_icon_path = self.resolve_resource_path("check.svg").replace(
-            "\\", "/"
-        )
+
+        logo_path = self._resolve_resource_path("logo.png")
+        if logo_path:
+            self.setWindowIcon(QIcon(logo_path))
+
         self.setWindowTitle("X-Tools 设置")
-        self.init_ui()
+        self.setMinimumSize(960, 680)
+
+        # Apply vibrant modern accent color instead of default blue
+        if self.config_manager.get_theme_name() == "Dark":
+            setThemeColor("#4CC2FF")  # Icy modern blue for dark mode
+        else:
+            setThemeColor("#4455EE")
+
+        # Enable acrylic/mica effect natively via FluentWindow
+        self.windowEffect.setMicaEffect(
+            self.winId(), isDarkMode=self.config_manager.get_theme_name() == "Dark"
+        )
+
+        self.init_pages()
         self.load_settings()
 
-    def resolve_resource_path(self, filename):
+    def _resolve_resource_path(self, filename):
         if getattr(sys, "frozen", False):
-            # If packaged with PyInstaller, use the internal temp folder
-            base_path = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+            base_path = os.path.dirname(sys.executable)
             possible_paths = [
                 os.path.join(base_path, filename),
-                os.path.join(base_path, "src", "ui", filename),
-                os.path.join(base_path, "_internal", "src", "ui", filename),
+                os.path.join(base_path, "_internal", filename),
             ]
         else:
-            # In development, look relative to this file
-            base_path = os.path.dirname(__file__)
-            possible_paths = [os.path.join(base_path, filename)]
-
+            possible_paths = [
+                os.path.join(os.path.dirname(__file__), filename),
+                os.path.join(os.getcwd(), filename),
+            ]
         for p in possible_paths:
             if os.path.exists(p):
                 return p
-        return filename  # Fallback
+        return None
 
-    def init_ui(self):
-        self.setMinimumSize(880, 600)
-        self.update_style()
+    def init_pages(self):
+        # ─── Page 0: General ───
+        self.page_gen = ScrollWidget("通用设置", "page_general", self)
+        gen_group = SettingCardGroup("应用启动行为", self.page_gen)
 
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self.startup_check = SwitchSettingCard(
+            FI.POWER_BUTTON,
+            "开机自动启动",
+            "在 Windows 启动时自动运行 X-Tools 并在后台驻留",
+            parent=gen_group,
+        )
+        self.startup_check.checkedChanged.connect(self.on_startup_changed)
+        gen_group.addSettingCard(self.startup_check)
+        self.page_gen.addGroup(gen_group)
+        self.page_gen.addStretch()
 
-        # 1. Left Sidebar
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(240)
+        # ─── Page 1: Appearance ───
+        self.page_app = ScrollWidget("外观样式", "page_appearance", self)
+        app_group = SettingCardGroup("界面与视觉", self.page_app)
 
-        self.add_sidebar_item("通用设置", "⚙️")
-        self.add_sidebar_item("外观样式", "🎨")
-        self.add_sidebar_item("插件管理", "🔌")
-
-        self.sidebar.currentRowChanged.connect(self.display_page)
-        main_layout.addWidget(self.sidebar)
-
-        # 2. Right Content Area
-        self.pages = QStackedWidget()
-        self.pages.setObjectName("contentArea")
-
-        # --- Page 0: General ---
-        page_gen = self.create_page("通用设置", "管理应用的基本运行方式")
-        self.startup_check = QCheckBox("系统启动时自动运行")
-        self.startup_check.stateChanged.connect(self.on_startup_changed)
-        page_gen.layout().addWidget(self.wrap_in_card(self.startup_check))
-        page_gen.layout().addStretch()
-        self.pages.addWidget(page_gen)
-
-        # --- Page 1: Appearance ---
-        page_app = self.create_page("外观样式", "自定义应用的主题和视觉效果")
-        theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("选择界面主题:"))
-        self.theme_combo = QComboBox()
+        self.theme_combo_card = SettingCard(
+            FI.BRUSH, "界面主题", "选择全量界面的配色风格", app_group
+        )
+        self.theme_combo = ComboBox(self.theme_combo_card)
         self.theme_combo.addItems(
             ["Dark", "Light"]
             + [
@@ -98,136 +261,135 @@ class SettingsWindow(QWidget):
                 if k not in ["Dark", "Light"]
             ]
         )
+        self.theme_combo.setCurrentText(self.config_manager.get_theme_name())
         self.theme_combo.currentTextChanged.connect(self.on_theme_changed)
-        theme_row.addWidget(self.theme_combo)
-        page_app.layout().addWidget(self.wrap_in_card(theme_row))
-
-        # Theme Editor
-        editor_label = QLabel("主题 JSON 配置 (小心编辑):")
-        editor_label.setObjectName("editorLabel")
-        page_app.layout().addWidget(editor_label)
-
-        self.theme_editor = QPlainTextEdit()
-        self.theme_editor.setObjectName("themeEditor")
-        self.theme_editor.setPlaceholderText(
-            '{\n  "Custom": {\n    "window_bg": "#...", ...\n  }\n}'
+        self.theme_combo_card.hBoxLayout.addWidget(
+            self.theme_combo, 0, Qt.AlignmentFlag.AlignRight
         )
-        page_app.layout().addWidget(self.theme_editor)
+        self.theme_combo_card.hBoxLayout.addSpacing(16)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        self.save_theme_btn = QPushButton("应用并保存主题")
-        self.save_theme_btn.setObjectName("saveBtn")
-        self.save_theme_btn.clicked.connect(self.on_save_themes)
-        btn_row.addWidget(self.save_theme_btn)
-        page_app.layout().addLayout(btn_row)
+        app_group.addSettingCard(self.theme_combo_card)
 
-        page_app.layout().addStretch()
-        self.pages.addWidget(page_app)
+        # Editor for raw JSON themes underneath
+        raw_theme_group = SettingCardGroup("主题 JSON 配置 (高级)", self.page_app)
+        # Using a layout to add PlainTextEdit
+        self.theme_editor = PlainTextEdit(self.page_app.view)
+        self.theme_editor.setMinimumHeight(200)
+        self.theme_editor.setStyleSheet("font-family: 'Consolas', monospace;")
+        raw_theme_group.layout().addWidget(self.theme_editor)
 
-        # --- Page 2: Plugins ---
-        page_plugins = self.create_page("插件管理", "启用或禁用功能扩展插件")
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setObjectName("pluginScroll")
+        save_btn = PrimaryPushSettingCard(
+            "应用保存",
+            FI.SAVE,
+            "保存高级主题配置",
+            "编辑上方的 JSON 后点击此按钮生效",
+            parent=raw_theme_group,
+        )
+        save_btn.clicked.connect(self.on_save_themes)
+        raw_theme_group.addSettingCard(save_btn)
 
-        self.scroll_content = QWidget()
-        self.plugin_list_layout = QVBoxLayout(self.scroll_content)
-        self.plugin_list_layout.setSpacing(15)
-        self.plugin_list_layout.setContentsMargins(0, 0, 15, 0)
+        self.page_app.addGroup(app_group)
+        self.page_app.addGroup(raw_theme_group)
+        self.page_app.addStretch()
+
+        # ─── Page 2: Plugins ───
+        self.page_plugins = ScrollWidget("插件管理", "page_plugins", self)
+        plugins_group = SettingCardGroup("启用的扩展功能", self.page_plugins)
 
         from src.core.plugin_manager import plugin_manager
 
         for plugin in plugin_manager.get_plugins(enabled_only=False):
-            p_card = QFrame()
-            p_card.setObjectName("pluginCard")
-            p_layout = QHBoxLayout(p_card)
-            p_layout.setContentsMargins(20, 15, 20, 15)
-
-            # Left: Toggle + Info
-            info_v_layout = QVBoxLayout()
-            info_h_layout = QHBoxLayout()
-            cb = QCheckBox(plugin.get_name())
-            cb.setProperty("class", "pluginTitle")
-            cb.setChecked(plugin_manager.is_plugin_enabled(plugin.get_name()))
-            cb.stateChanged.connect(
+            desc = (
+                plugin.get_description()
+                + f" (触发词: {', '.join(plugin.get_keywords())})"
+            )
+            card = SwitchSettingCard(
+                FI.APPLICATION, plugin.get_name(), desc, parent=plugins_group
+            )
+            card.setChecked(plugin_manager.is_plugin_enabled(plugin.get_name()))
+            card.checkedChanged.connect(
                 lambda state, name=plugin.get_name(): plugin_manager.set_plugin_enabled(
-                    name, state == 2
+                    name, state
                 )
             )
-            info_h_layout.addWidget(cb)
+            plugins_group.addSettingCard(card)
 
-            # Keywords next to title
-            for kw in plugin.get_keywords():
-                kw_label = QLabel(kw)
-                kw_label.setProperty("class", "pluginKeyword")
-                info_h_layout.addWidget(kw_label)
-            info_h_layout.addStretch()
-            info_v_layout.addLayout(info_h_layout)
+        self.page_plugins.addGroup(plugins_group)
+        self.page_plugins.addStretch()
 
-            desc = QLabel(plugin.get_description())
-            desc.setProperty("class", "pluginDesc")
-            info_v_layout.addWidget(desc)
-            p_layout.addLayout(info_v_layout)
+        # ─── Page 3: Hotkeys ───
+        self.page_hotkeys = ScrollWidget("快捷键", "page_hotkeys", self)
+        hotkeys_group = SettingCardGroup("全局操作快捷键", self.page_hotkeys)
 
-            self.plugin_list_layout.addWidget(p_card)
+        self._hotkey_cards = {}
+        actions = [
+            ("toggle_window", "唤起 / 隐藏主搜索窗口", FI.SEARCH),
+            ("screenshot", "立即进行屏幕截图并在编辑后复制", FI.PHOTO),
+            ("pin_clipboard", "将目前系统剪切板贴在屏幕最上层", FI.PIN),
+        ]
 
-        self.plugin_list_layout.addStretch()
-        self.scroll.setWidget(self.scroll_content)
-        page_plugins.layout().addWidget(self.scroll)
-        self.pages.addWidget(page_plugins)
+        for action_key, label_text, icon in actions:
+            card = HotkeyRecordCard(
+                label_text,
+                action_key,
+                self.config_manager,
+                icon=icon,
+                parent=hotkeys_group,
+            )
+            self._hotkey_cards[action_key] = card
+            hotkeys_group.addSettingCard(card)
 
-        main_layout.addWidget(self.pages)
-        self.sidebar.setCurrentRow(0)
+        self.page_hotkeys.addGroup(hotkeys_group)
 
-    def create_page(self, title, subtitle):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(40, 40, 40, 40)
-        layout.setSpacing(10)
+        action_group = SettingCardGroup("操作", self.page_hotkeys)
 
-        header = QLabel(title)
-        header.setObjectName("pageHeader")
-        layout.addWidget(header)
+        save_hk_btn = PrimaryPushSettingCard(
+            "保存",
+            FI.ACCEPT,
+            "保存快捷键配置",
+            "录制完毕后，点击保存使全局热键生效",
+            parent=action_group,
+        )
+        save_hk_btn.clicked.connect(self.on_save_hotkeys)
+        action_group.addSettingCard(save_hk_btn)
 
-        sub = QLabel(subtitle)
-        sub.setObjectName("pageSubtitle")
-        layout.addWidget(sub)
+        reset_btn = PushSettingCard(
+            "恢复",
+            FI.SYNC,
+            "恢复默认值",
+            "清空现有设置，恢复回初始快捷键",
+            parent=action_group,
+        )
+        reset_btn.clicked.connect(self.on_reset_hotkeys)
+        action_group.addSettingCard(reset_btn)
 
-        return page
+        self.page_hotkeys.addGroup(action_group)
+        self.page_hotkeys.addStretch()
 
-    def wrap_in_card(self, content):
-        card = QFrame()
-        card.setObjectName("card")
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 20, 20, 20)
-        if isinstance(content, QHBoxLayout):
-            layout.addLayout(content)
-        else:
-            layout.addWidget(content)
-        return card
-
-    def add_sidebar_item(self, text, icon_char):
-        item = QListWidgetItem(f"  {icon_char}  {text}")
-        item.setSizeHint(QSize(0, 50))
-        self.sidebar.addItem(item)
-
-    def display_page(self, index):
-        self.pages.setCurrentIndex(index)
+        # ─── Add Interfaces ───
+        self.addSubInterface(self.page_gen, FI.SETTING, "通用")
+        self.addSubInterface(self.page_app, FI.BRUSH, "外观")
+        self.addSubInterface(self.page_plugins, FI.APPLICATION, "插件")
+        self.addSubInterface(self.page_hotkeys, FI.COMMAND_PROMPT, "快捷键")
 
     def load_settings(self):
         config = self.config_manager.config
-        current_theme = config.get("theme", "Dark")
-        index = self.theme_combo.findText(current_theme)
-        if index >= 0:
-            self.theme_combo.setCurrentIndex(index)
-        self.startup_check.setChecked(config.get("run_on_startup", False))
-        self.refresh_theme_editor()
 
-    def refresh_theme_editor(self):
+        self.startup_check.setChecked(config.get("run_on_startup", False))
+
         json_str = json.dumps(self.config_manager.themes, indent=4, ensure_ascii=False)
         self.theme_editor.setPlainText(json_str)
+
+    def on_theme_changed(self, text):
+        self.config_manager.config["theme"] = text
+        self.config_manager.save_config()
+        # The app style will reload
+        self.settings_changed.emit()
+
+    def on_startup_changed(self, state):
+        success = self.config_manager.set_startup(state)
+        if not success:
+            self.startup_check.setChecked(not state)
 
     def on_save_themes(self):
         try:
@@ -235,211 +397,39 @@ class SettingsWindow(QWidget):
             if not isinstance(new_themes, dict):
                 raise ValueError("JSON must be an object/dict")
 
-            # Validate basic structure for current theme at least
             current = self.config_manager.config.get("theme", "Dark")
             if current not in new_themes:
-                # If they renamed/removed current, fallback to first available or Dark
-                if new_themes:
-                    current = list(new_themes.keys())[0]
-                    self.config_manager.config["theme"] = current
-                else:
-                    raise ValueError("At least one theme must be defined")
+                current = list(new_themes.keys())[0] if new_themes else "Dark"
+                self.config_manager.config["theme"] = current
 
             self.config_manager.themes = new_themes
             self.config_manager.save_themes()
 
-            # Update combo
-            self.theme_combo.blockSignals(True)
-            self.theme_combo.clear()
-            self.theme_combo.addItems(list(new_themes.keys()))
-            index = self.theme_combo.findText(current)
-            if index >= 0:
-                self.theme_combo.setCurrentIndex(index)
-            self.theme_combo.blockSignals(False)
-
-            self.update_style()
+            # Refresh Options manually if needed, simplified here
             self.settings_changed.emit()
             QMessageBox.information(self, "成功", "主题配置已应用并保存！")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"JSON 格式无效: {str(e)}")
 
-    def update_style(self):
-        theme = self.config_manager.get_theme()
-        qss = f"""
-            QWidget {{
-                background-color: transparent;
-                color: {theme["text_color"]};
-                font-family: "Microsoft YaHei UI", sans-serif;
-            }}
-            SettingsWindow, #sidebar, #contentArea, QStackedWidget {{
-                background-color: {theme["window_bg"]};
-            }}
-            #sidebar {{
-                background-color: {theme["input_bg"]};
-                border: none;
-                border-right: 1px solid {theme["border"]};
-                padding-top: 15px;
-                outline: none;
-            }}
-            #sidebar::item {{
-                height: 50px;
-                padding-left: 20px;
-                border-left: 4px solid transparent;
-                color: {theme["text_color"]};
-                font-size: 14px;
-            }}
-            #sidebar::item:selected {{
-                background-color: {theme["selection_bg"]};
-                color: {theme["selection_text"]};
-                border-left: 4px solid {theme["highlight"]};
-                font-weight: bold;
-            }}
-            #sidebar::item:hover:!selected {{
-                background-color: {theme["selection_bg"]}40;
-            }}
-            #pageHeader {{
-                font-size: 32px;
-                font-weight: bold;
-                color: {theme["text_color"]};
-                margin-bottom: 5px;
-            }}
-            #pageSubtitle {{
-                font-size: 14px;
-                color: {theme["text_dim"]};
-                margin-bottom: 20px;
-            }}
-            #card, #pluginCard {{
-                background-color: {theme["input_bg"]};
-                border: 1px solid {theme["border"]};
-                border-radius: 12px;
-            }}
-            #pluginCard:hover {{
-                border: 1px solid {theme["highlight"]}80;
-            }}
-            .pluginTitle {{
-                font-size: 16px;
-                font-weight: bold;
-                color: {theme["text_color"]};
-            }}
-            .pluginDesc {{
-                font-size: 13px;
-                color: {theme["text_dim"]};
-                margin-left: 32px;
-            }}
-            .pluginKeyword {{
-                background-color: {theme["highlight"]}33;
-                color: {theme["highlight"]};
-                border: 1px solid {theme["highlight"]}66;
-                border-radius: 4px;
-                padding: 2px 8px;
-                font-size: 12px;
-                font-weight: bold;
-                font-family: 'Consolas', 'Courier New', monospace;
-                margin-left: 5px;
-            }}
-            QComboBox {{
-                background-color: {theme["input_bg"]};
-                border: 1px solid {theme["border"]};
-                border-radius: 6px;
-                padding: 8px 12px;
-                min-width: 160px;
-                color: {theme["text_color"]};
-            }}
-            QComboBox:hover {{
-                border: 1px solid {theme["highlight"]};
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {theme["input_bg"]};
-                border: 1px solid {theme["border"]};
-                selection-background-color: {theme["selection_bg"]};
-                selection-color: {theme["selection_text"]};
-                color: {theme["text_color"]};
-                outline: none;
-            }}
-            #themeEditor {{
-                background-color: {theme["input_bg"]};
-                border: 1px solid {theme["border"]};
-                border-radius: 8px;
-                color: {theme["text_color"]};
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                font-size: 13px;
-                padding: 10px;
-                min-height: 250px;
-            }}
-            #editorLabel {{
-                font-size: 14px;
-                font-weight: bold;
-                margin-top: 20px;
-                color: {theme["text_color"]};
-            }}
-            #saveBtn {{
-                background-color: {theme["highlight"]};
-                color: {theme["selection_text"]};
-                border: none;
-                border-radius: 6px;
-                padding: 10px 24px;
-                font-weight: bold;
-                font-size: 14px;
-            }}
-            #saveBtn:hover {{
-                background-color: {theme["highlight"]}EE;
-            }}
-            #saveBtn:pressed {{
-                background-color: {theme["highlight"]}CC;
-            }}
-            QCheckBox {{
-                spacing: 12px;
-                font-size: 14px;
-            }}
-            QCheckBox::indicator {{
-                width: 20px;
-                height: 20px;
-                border: 2px solid {theme["border"]};
-                border-radius: 6px;
-                background-color: {theme["input_bg"]};
-                padding: 2px;
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {theme["highlight"]};
-                border: 2px solid {theme["highlight"]};
-                image: url({self.check_icon_path});
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {theme["highlight"]};
-            }}
-            QCheckBox::indicator:unchecked:hover {{
-                background-color: {theme["highlight"]}1A;
-            }}
-            QScrollBar:vertical {{
-                border: none;
-                background: transparent;
-                width: 10px;
-                margin: 2px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {theme["scrollbar_handle"]};
-                border-radius: 5px;
-                min-height: 30px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {theme["highlight"]};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-        """
-        self.setStyleSheet(qss)
+    def on_save_hotkeys(self):
+        values = []
+        for action_key, card in self._hotkey_cards.items():
+            hk = card.get_hotkey()
+            if hk:
+                if hk in values:
+                    QMessageBox.warning(self, "冲突", f"快捷键 '{hk}' 被多次使用。")
+                    return
+                values.append(hk)
 
-    def on_theme_changed(self, text):
-        self.config_manager.config["theme"] = text
-        self.config_manager.save_config()
-        self.update_style()
-        self.settings_changed.emit()
+        for action_key, card in self._hotkey_cards.items():
+            self.config_manager.set_hotkey(action_key, card.get_hotkey())
 
-    def on_startup_changed(self, state):
-        enable = state == 2
-        success = self.config_manager.set_startup(enable)
-        if not success:
-            self.startup_check.blockSignals(True)
-            self.startup_check.setChecked(not enable)
-            self.startup_check.blockSignals(False)
+        self.hotkeys_changed.emit()
+        QMessageBox.information(self, "成功", "快捷键已保存并生效。")
+
+    def on_reset_hotkeys(self):
+        from src.core.config import DEFAULT_HOTKEYS
+
+        for action_key, card in self._hotkey_cards.items():
+            default_val = DEFAULT_HOTKEYS.get(action_key, "")
+            card.set_hotkey(default_val)

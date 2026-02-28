@@ -36,6 +36,22 @@ PyInstaller.__main__.run(
         "--add-data=src/ui/check.svg;src/ui",
         "--add-data=src/plugins;src/plugins",
         "--add-binary=Everything64.dll;.",
+        # --- Hidden imports for dynamically-loaded plugins and their deps ---
+        # UI modules imported by plugins (not traceable via static analysis)
+        "--hidden-import=src.ui.hosts_window",
+        "--hidden-import=src.ui.screenshot_overlay",
+        "--hidden-import=src.ui.pinned_image_window",
+        # Plugin files themselves (loaded via importlib at runtime)
+        "--hidden-import=src.plugins.hosts_tool",
+        "--hidden-import=src.plugins.qr_tool",
+        "--hidden-import=src.plugins.hash_tool",
+        "--hidden-import=src.plugins.json_tool",
+        "--hidden-import=src.plugins.url_tool",
+        "--hidden-import=src.plugins.uuid_tool",
+        # Third-party libs used by new plugins/UI
+        "--hidden-import=qrcode",
+        "--hidden-import=cv2",
+        "--hidden-import=rapidocr_onnxruntime",
         "--clean",
         "--noconfirm",
         f"--icon={icon_path}",

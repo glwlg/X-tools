@@ -134,17 +134,14 @@ class HotkeyManager(QObject):
         self._hotkey_id_counter += 1
         self._callbacks[hotkey_id] = (callback, modifiers, vk)
 
-        # Start the listener thread if not already running
-        if not self._running:
-            self._start_listener()
-
         return hotkey_id
 
-    def _start_listener(self):
+    def start(self):
         """Start the background thread that listens for hotkey events."""
-        self._running = True
-        self._thread = threading.Thread(target=self._listener_loop, daemon=True)
-        self._thread.start()
+        if not self._running:
+            self._running = True
+            self._thread = threading.Thread(target=self._listener_loop, daemon=True)
+            self._thread.start()
 
     def _listener_loop(self):
         """
@@ -156,7 +153,12 @@ class HotkeyManager(QObject):
         user32 = ctypes.windll.user32
 
         # Register all pending hotkeys
-        for hk_id, (callback, modifiers, vk) in self._callbacks.items():
+        callbacks_copy = list(self._callbacks.values())
+        for _, modifiers, vk in callbacks_copy:
+            # We need the key as well actually
+            pass
+
+        for hk_id, (callback, modifiers, vk) in list(self._callbacks.items()):
             result = user32.RegisterHotKey(None, hk_id, modifiers, vk)
             if result:
                 print(
@@ -193,6 +195,8 @@ class HotkeyManager(QObject):
 
     def stop(self):
         """Stop the hotkey listener."""
+        if not self._running:
+            return
         self._running = False
         # Post WM_QUIT to unblock GetMessage
         if self._thread and self._thread.is_alive():
@@ -202,3 +206,11 @@ class HotkeyManager(QObject):
                 0,
                 0,  # WM_QUIT
             )
+            self._thread.join(timeout=3)
+        self._thread = None
+
+    def restart(self):
+        """Stop, clear all registrations, and prepare for fresh register() + start()."""
+        self.stop()
+        self._callbacks.clear()
+        self._hotkey_id_counter = 1
