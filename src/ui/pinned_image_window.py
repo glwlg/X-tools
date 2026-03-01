@@ -1,5 +1,13 @@
-from PyQt6.QtCore import Qt, QPoint, QThread, pyqtSignal, QRect
-from PyQt6.QtGui import QPixmap, QAction, QColor, QPainter, QImage
+from PyQt6.QtCore import (
+    Qt,
+    QPoint,
+    QThread,
+    pyqtSignal,
+    QRect,
+    QPropertyAnimation,
+    QTimer,
+)
+from PyQt6.QtGui import QPixmap, QAction, QColor, QPainter, QImage, QKeySequence
 from PyQt6.QtWidgets import (
     QWidget,
     QApplication,
@@ -136,6 +144,7 @@ class TranslateWorker(QThread):
 class ImageLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scale_factor = 1.0
         self.ocr_lines = []
         self.is_selecting = False
@@ -181,10 +190,11 @@ class ImageLabel(QLabel):
                     break
 
             if clicked_text:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
                 self.is_selecting = True
                 self.selection_start = pos
                 self.selection_end = pos
-                self.has_selection = True
+                self.has_selection = False
                 event.accept()
                 self.update()
                 return
@@ -197,6 +207,9 @@ class ImageLabel(QLabel):
     def mouseMoveEvent(self, event):
         if self.is_selecting and (event.buttons() & Qt.MouseButton.LeftButton):
             self.selection_end = event.pos()
+            if self.selection_start is not None:
+                delta = self.selection_end - self.selection_start
+                self.has_selection = delta.manhattanLength() > 2
             self.update()
             event.accept()
         else:
@@ -205,21 +218,86 @@ class ImageLabel(QLabel):
     def mouseReleaseEvent(self, event):
         if self.is_selecting and event.button() == Qt.MouseButton.LeftButton:
             self.selection_end = event.pos()
+            if self.selection_start is not None:
+                delta = self.selection_end - self.selection_start
+                self.has_selection = delta.manhattanLength() > 2
             self.is_selecting = False
-            self.copy_selection()
             self.update()
             event.accept()
         else:
             event.ignore()
 
-    def copy_selection(self):
-        if not self.has_selection or not self.selection_start or not self.selection_end:
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_selection()
+            event.accept()
             return
+        event.ignore()
+
+    def _group_ocr_lines_by_row(self):
+        if not self.ocr_lines:
+            return []
 
         sorted_lines = sorted(
-            self.ocr_lines, key=lambda l: (l["rect"][1], l["rect"][0])
+            self.ocr_lines,
+            key=lambda l: (l["rect"][1] + l["rect"][3] / 2, l["rect"][0]),
         )
-        selected_texts = []
+        heights = [
+            max(1, int(line["rect"][3] * self.scale_factor)) for line in sorted_lines
+        ]
+        row_threshold = max(4, int(sum(heights) / len(heights) * 0.5))
+
+        rows = []
+        current_row = []
+        current_row_y = None
+
+        for line in sorted_lines:
+            _, y, _, h = line["rect"]
+            center_y = int((y + h / 2) * self.scale_factor)
+            if current_row_y is None or abs(center_y - current_row_y) <= row_threshold:
+                current_row.append(line)
+                if current_row_y is None:
+                    current_row_y = center_y
+                else:
+                    current_row_y = int((current_row_y + center_y) / 2)
+            else:
+                rows.append(sorted(current_row, key=lambda item: item["rect"][0]))
+                current_row = [line]
+                current_row_y = center_y
+
+        if current_row:
+            rows.append(sorted(current_row, key=lambda item: item["rect"][0]))
+
+        return rows
+
+    @staticmethod
+    def _join_row_fragments(fragments):
+        if not fragments:
+            return ""
+
+        row_text = fragments[0]["text"]
+        prev_right = fragments[0]["x1"]
+        prev_char_w = max(1.0, float(fragments[0]["char_w"]))
+
+        for fragment in fragments[1:]:
+            curr_char_w = max(1.0, float(fragment["char_w"]))
+            gap = int(fragment["x0"]) - int(prev_right)
+            gap_threshold = max(0.2, min(prev_char_w, curr_char_w) * 0.08)
+            if gap > gap_threshold:
+                row_text += " "
+
+            row_text += fragment["text"]
+            prev_right = fragment["x1"]
+            prev_char_w = curr_char_w
+
+        return row_text
+
+    def get_selected_text(self):
+        if not self.has_selection or not self.selection_start or not self.selection_end:
+            return ""
+
+        rows = self._group_ocr_lines_by_row()
+        selected_rows = []
 
         # Determine logical start and end points (top-to-bottom, left-to-right)
         start_pt = self.selection_start
@@ -229,54 +307,151 @@ class ImageLabel(QLabel):
         ):
             start_pt, end_pt = end_pt, start_pt
 
-        for line in sorted_lines:
-            x, y, w, h = line["rect"]
-            sx = int(x * self.scale_factor)
-            sy = int(y * self.scale_factor)
-            sw = int(w * self.scale_factor)
-            sh = int(h * self.scale_factor)
-            line_rect = QRect(sx, sy, sw, sh)
+        for row in rows:
+            row_fragments = []
+            scaled_row = []
 
-            # Check if line is vertically within the selection range
-            line_centerY = sy + sh / 2
+            for line in row:
+                x, y, w, h = line["rect"]
+                sx = int(x * self.scale_factor)
+                sy = int(y * self.scale_factor)
+                sw = int(w * self.scale_factor)
+                sh = int(h * self.scale_factor)
+                scaled_row.append(
+                    {
+                        "line": line,
+                        "sx": sx,
+                        "sy": sy,
+                        "sw": sw,
+                        "sh": sh,
+                        "rect": QRect(sx, sy, sw, sh),
+                    }
+                )
 
-            # If the current line is above the selection start line
-            if line_rect.bottom() < start_pt.y():
+            if not scaled_row:
                 continue
-            # If the current line is below the selection end line
-            if line_rect.top() > end_pt.y():
-                break
 
-            text_len = len(line["text"])
-            if text_len == 0:
-                continue
+            start_anchor_candidates = [
+                idx
+                for idx, seg in enumerate(scaled_row)
+                if seg["rect"].contains(start_pt)
+            ]
+            start_anchor_idx = None
+            if start_anchor_candidates:
+                start_anchor_idx = max(
+                    start_anchor_candidates, key=lambda idx: scaled_row[idx]["sx"]
+                )
 
-            char_w = sw / text_len
+            end_anchor_candidates = [
+                idx
+                for idx, seg in enumerate(scaled_row)
+                if seg["rect"].contains(end_pt)
+            ]
+            end_anchor_idx = None
+            if end_anchor_candidates:
+                end_anchor_idx = min(
+                    end_anchor_candidates, key=lambda idx: scaled_row[idx]["sx"]
+                )
 
-            start_idx = 0
-            end_idx = text_len
+            for idx, seg in enumerate(scaled_row):
+                line = seg["line"]
+                sx = seg["sx"]
+                sy = seg["sy"]
+                sw = seg["sw"]
+                sh = seg["sh"]
+                line_rect = seg["rect"]
 
-            # If the line contains the start point
-            if line_rect.top() <= start_pt.y() <= line_rect.bottom():
-                px_start = start_pt.x() - sx
-                start_idx = max(0, int(px_start / char_w))
+                # If the current line is above the selection start line
+                if line_rect.bottom() < start_pt.y():
+                    continue
+                # If the current line is below the selection end line
+                if line_rect.top() > end_pt.y():
+                    continue
 
-            # If the line contains the end point
-            if line_rect.top() <= end_pt.y() <= line_rect.bottom():
-                px_end = end_pt.x() - sx
-                end_idx = min(text_len, int(px_end / char_w) + 1)
+                line_text = str(line.get("text", ""))
+                text_len = len(line_text)
+                if text_len == 0:
+                    continue
+                if sw <= 0:
+                    continue
 
-            # If start_idx and end_idx are out of order (e.g., right to left drag on the same line)
-            if start_idx > end_idx:
-                start_idx, end_idx = end_idx, start_idx
+                char_w = sw / text_len
 
-            # Full line is between start/end
-            if start_idx < end_idx:
-                selected_texts.append(line["text"][start_idx:end_idx])
+                start_idx = 0
+                end_idx = text_len
 
-        if selected_texts:
-            text_str = "\\n".join(selected_texts)
-            QApplication.clipboard().setText(text_str)
+                # If the line contains the start point (same y band)
+                if line_rect.top() <= start_pt.y() <= line_rect.bottom():
+                    if start_anchor_idx is not None:
+                        if idx < start_anchor_idx:
+                            start_idx = text_len
+                        elif idx > start_anchor_idx:
+                            start_idx = 0
+                        else:
+                            px_start = start_pt.x() - sx
+                            start_idx = max(
+                                0, min(text_len, int((px_start / char_w) - 0.2))
+                            )
+                    else:
+                        px_start = start_pt.x() - sx
+                        start_idx = max(
+                            0, min(text_len, int((px_start / char_w) - 0.2))
+                        )
+
+                # If the line contains the end point (same y band)
+                if line_rect.top() <= end_pt.y() <= line_rect.bottom():
+                    if end_anchor_idx is not None:
+                        if idx < end_anchor_idx:
+                            end_idx = text_len
+                        elif idx > end_anchor_idx:
+                            end_idx = 0
+                        else:
+                            px_end = end_pt.x() - sx
+                            end_idx = max(0, min(text_len, int(px_end / char_w) + 1))
+                    else:
+                        px_end = end_pt.x() - sx
+                        end_idx = max(0, min(text_len, int(px_end / char_w) + 1))
+
+                # If start_idx and end_idx are out of order (e.g., right to left drag on the same line)
+                if start_idx > end_idx:
+                    start_idx, end_idx = end_idx, start_idx
+
+                if start_idx >= end_idx:
+                    continue
+
+                fragment_text = line_text[start_idx:end_idx]
+                if not fragment_text:
+                    continue
+
+                fragment_left = sx + int(start_idx * char_w)
+                fragment_right = sx + int(end_idx * char_w)
+                row_fragments.append(
+                    {
+                        "text": fragment_text,
+                        "x0": min(fragment_left, fragment_right),
+                        "x1": max(fragment_left, fragment_right),
+                        "char_w": char_w,
+                    }
+                )
+
+            if row_fragments:
+                row_fragments.sort(key=lambda item: item["x0"])
+                selected_rows.append(self._join_row_fragments(row_fragments))
+
+        if not selected_rows:
+            return ""
+        return "\n".join(selected_rows)
+
+    def copy_selection(self):
+        text_str = self.get_selected_text()
+        if not text_str:
+            return False
+
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return False
+        clipboard.setText(text_str)
+        return True
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -300,45 +475,113 @@ class ImageLabel(QLabel):
         ):
             start_pt, end_pt = end_pt, start_pt
 
-        sorted_lines = sorted(
-            self.ocr_lines, key=lambda l: (l["rect"][1], l["rect"][0])
-        )
+        rows = self._group_ocr_lines_by_row()
 
-        for line in sorted_lines:
-            x, y, w, h = line["rect"]
-            sx = int(x * self.scale_factor)
-            sy = int(y * self.scale_factor)
-            sw = int(w * self.scale_factor)
-            sh = int(h * self.scale_factor)
-            line_rect = QRect(sx, sy, sw, sh)
+        for row in rows:
+            scaled_row = []
+            for line in row:
+                x, y, w, h = line["rect"]
+                sx = int(x * self.scale_factor)
+                sy = int(y * self.scale_factor)
+                sw = int(w * self.scale_factor)
+                sh = int(h * self.scale_factor)
+                scaled_row.append(
+                    {
+                        "line": line,
+                        "sx": sx,
+                        "sy": sy,
+                        "sw": sw,
+                        "sh": sh,
+                        "rect": QRect(sx, sy, sw, sh),
+                    }
+                )
 
-            if line_rect.bottom() < start_pt.y() or line_rect.top() > end_pt.y():
+            if not scaled_row:
                 continue
 
-            text_len = max(1, len(line["text"]))
-            char_w = sw / text_len
+            start_anchor_candidates = [
+                idx
+                for idx, seg in enumerate(scaled_row)
+                if seg["rect"].contains(start_pt)
+            ]
+            start_anchor_idx = None
+            if start_anchor_candidates:
+                start_anchor_idx = max(
+                    start_anchor_candidates, key=lambda idx: scaled_row[idx]["sx"]
+                )
 
-            highlight_x = sx
-            highlight_w = sw
+            end_anchor_candidates = [
+                idx
+                for idx, seg in enumerate(scaled_row)
+                if seg["rect"].contains(end_pt)
+            ]
+            end_anchor_idx = None
+            if end_anchor_candidates:
+                end_anchor_idx = min(
+                    end_anchor_candidates, key=lambda idx: scaled_row[idx]["sx"]
+                )
 
-            if line_rect.top() <= start_pt.y() <= line_rect.bottom():
-                px_start = start_pt.x() - sx
-                start_idx = max(0, int(px_start / char_w))
-                highlight_x = sx + int(start_idx * char_w)
-                highlight_w -= int(start_idx * char_w)
+            for idx, seg in enumerate(scaled_row):
+                line = seg["line"]
+                sx = seg["sx"]
+                sy = seg["sy"]
+                sw = seg["sw"]
+                sh = seg["sh"]
+                line_rect = seg["rect"]
 
-            if line_rect.top() <= end_pt.y() <= line_rect.bottom():
-                px_end = end_pt.x() - sx
-                end_idx = min(text_len, int(px_end / char_w) + 1)
-                highlight_w -= sw - int(end_idx * char_w)
+                if line_rect.bottom() < start_pt.y() or line_rect.top() > end_pt.y():
+                    continue
 
-            # Ensure x and w are properly formed if dragged right-to-left on the same line
-            if highlight_w < 0:
-                highlight_w = abs(highlight_w)
-                highlight_x = highlight_x - highlight_w
+                text_len = max(1, len(line["text"]))
+                if sw <= 0:
+                    continue
+                char_w = sw / text_len
 
-            if highlight_w > 0:
-                painter.drawRect(QRect(highlight_x, sy, highlight_w, sh))
+                highlight_x = sx
+                highlight_w = sw
+
+                if line_rect.top() <= start_pt.y() <= line_rect.bottom():
+                    if start_anchor_idx is not None:
+                        if idx < start_anchor_idx:
+                            start_idx = text_len
+                        elif idx > start_anchor_idx:
+                            start_idx = 0
+                        else:
+                            px_start = start_pt.x() - sx
+                            start_idx = max(
+                                0, min(text_len, int((px_start / char_w) - 0.2))
+                            )
+                    else:
+                        px_start = start_pt.x() - sx
+                        start_idx = max(
+                            0, min(text_len, int((px_start / char_w) - 0.2))
+                        )
+
+                    highlight_x = sx + int(start_idx * char_w)
+                    highlight_w -= int(start_idx * char_w)
+
+                if line_rect.top() <= end_pt.y() <= line_rect.bottom():
+                    if end_anchor_idx is not None:
+                        if idx < end_anchor_idx:
+                            end_idx = text_len
+                        elif idx > end_anchor_idx:
+                            end_idx = 0
+                        else:
+                            px_end = end_pt.x() - sx
+                            end_idx = max(0, min(text_len, int(px_end / char_w) + 1))
+                    else:
+                        px_end = end_pt.x() - sx
+                        end_idx = max(0, min(text_len, int(px_end / char_w) + 1))
+
+                    highlight_w -= sw - int(end_idx * char_w)
+
+                # Ensure x and w are properly formed if dragged right-to-left on the same line
+                if highlight_w < 0:
+                    highlight_w = abs(highlight_w)
+                    highlight_x = highlight_x - highlight_w
+
+                if highlight_w > 0:
+                    painter.drawRect(QRect(highlight_x, sy, highlight_w, sh))
 
 
 class PinnedImageWindow(QWidget):
@@ -439,6 +682,11 @@ class PinnedImageWindow(QWidget):
         if self.image_label.ocr_lines:
             menu.addSeparator()
 
+            if self.image_label.has_selection:
+                copy_selected_action = QAction("复制选中 OCR 文本", self)
+                copy_selected_action.triggered.connect(self.copy_selected_ocr_text)
+                menu.addAction(copy_selected_action)
+
             copy_ocr_action = QAction("复制 OCR 全文", self)
             copy_ocr_action.triggered.connect(self.copy_ocr_text)
             menu.addAction(copy_ocr_action)
@@ -493,6 +741,12 @@ class PinnedImageWindow(QWidget):
             return
         QApplication.clipboard().setText(text)
         self.show_toast("OCR 全文已复制")
+
+    def copy_selected_ocr_text(self):
+        if self.image_label.copy_selection():
+            self.show_toast("选中文本已复制")
+            return
+        self.show_toast("暂无选中文本")
 
     def copy_ocr_single_line(self):
         text = self.get_ocr_text(single_line=True)
@@ -628,44 +882,56 @@ class PinnedImageWindow(QWidget):
         self.show_toast("翻译失败")
 
     def show_toast(self, message, duration=3000):
-        if self.toast_label:
-            self.toast_label.hide()
-            self.toast_label.deleteLater()
+        if self.toast_label is not None:
+            try:
+                self.toast_label.hide()
+                self.toast_label.deleteLater()
+            except RuntimeError:
+                pass
+            finally:
+                self.toast_label = None
 
-        self.toast_label = QLabel(message, self)
-        self.toast_label.setStyleSheet(
+        toast_label = QLabel(message, self)
+        toast_label.setStyleSheet(
             "background-color: rgba(30, 30, 30, 200); color: white; padding: 10px; border-radius: 5px; font-weight: bold;"
         )
-        self.toast_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.toast_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.toast_label.adjustSize()
+        toast_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toast_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        toast_label.adjustSize()
 
         # Center horizontally, near the top
-        x = (self.width() - self.toast_label.width()) // 2
-        self.toast_label.move(x, 20)
-        self.toast_label.show()
+        x = (self.width() - toast_label.width()) // 2
+        toast_label.move(x, 20)
+        toast_label.show()
 
-        # Fade out animation
-        from PyQt6.QtCore import QPropertyAnimation, QTimer
+        opacity_effect = QGraphicsOpacityEffect(toast_label)
+        toast_label.setGraphicsEffect(opacity_effect)
 
-        self.opacity_effect = QGraphicsOpacityEffect()
-        self.toast_label.setGraphicsEffect(self.opacity_effect)
+        animation = QPropertyAnimation(opacity_effect, b"opacity", toast_label)
+        animation.setDuration(500)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.0)
 
-        self.animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.animation.setDuration(500)
-        self.animation.setStartValue(1.0)
-        self.animation.setEndValue(0.0)
+        timer = QTimer(toast_label)
+        timer.setSingleShot(True)
+        timer.timeout.connect(animation.start)
+        timer.start(duration)
 
-        QTimer.singleShot(duration, self.animation.start)
+        self.toast_label = toast_label
+
+        def clear_if_current():
+            if self.toast_label is toast_label:
+                self.toast_label = None
 
         def safe_delete():
+            clear_if_current()
             try:
-                if self.toast_label:
-                    self.toast_label.deleteLater()
-            except Exception:
+                toast_label.deleteLater()
+            except RuntimeError:
                 pass
 
-        self.animation.finished.connect(safe_delete)
+        animation.finished.connect(safe_delete)
+        toast_label.destroyed.connect(lambda *_: clear_if_current())
 
     def recognize_text(self):
         if self.ocr_worker and self.ocr_worker.isRunning():
@@ -680,4 +946,3 @@ class PinnedImageWindow(QWidget):
 
     def on_ocr_finished(self, results):
         self.image_label.set_ocr_results(results)
-        self.show_toast(f"OCR 完成，共 {len(results)} 条")

@@ -1,21 +1,18 @@
 import PyInstaller.__main__
 import os
+import shutil
 
 # Ensure we are in the script directory
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # Clean previous build
 if os.path.exists("dist/x-tools"):
-    import shutil
-
     try:
         shutil.rmtree("dist/x-tools")
     except Exception as e:
         print(f"Warning: Could not clean dist folder: {e}")
 
 if os.path.exists("build/x-tools"):
-    import shutil
-
     try:
         shutil.rmtree("build/x-tools")
     except Exception as e:
@@ -52,6 +49,7 @@ PyInstaller.__main__.run(
         "--hidden-import=qrcode",
         "--hidden-import=cv2",
         "--hidden-import=rapidocr_onnxruntime",
+        "--collect-all=rapidocr_onnxruntime",
         "--clean",
         "--noconfirm",
         f"--icon={icon_path}",
