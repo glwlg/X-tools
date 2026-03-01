@@ -10,7 +10,24 @@ class JsonPlugin(PluginBase):
         return "格式化或压缩 JSON 字符串"
 
     def get_keywords(self):
-        return ["j"]
+        return ["j", "json"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "json <json-text>",
+            "examples": [
+                'json {"name":"x-tools","ok":true}',
+                'j {"items":[1,2,3]}',
+            ],
+            "params": [
+                {
+                    "name": "json_text",
+                    "label": "JSON",
+                    "placeholder": "输入 JSON 字符串",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()

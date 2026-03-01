@@ -11,7 +11,21 @@ class TimestampPlugin(PluginBase):
         return "Unix 时间戳与日期格式互转"
 
     def get_keywords(self):
-        return ["t"]
+        return ["t", "ts", "time", "timestamp"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "timestamp <now|unix|date>",
+            "examples": ["t now", "timestamp 1710000000", "ts 2026-03-01 12:30:00"],
+            "params": [
+                {
+                    "name": "value",
+                    "label": "时间输入",
+                    "placeholder": "now / 1710000000 / 2026-03-01 12:30:00",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()

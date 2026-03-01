@@ -10,7 +10,21 @@ class CalculatorPlugin(PluginBase):
         return "执行数学运算"
 
     def get_keywords(self):
-        return ["c"]
+        return ["c", "calc", "calculate"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "calc <expression>",
+            "examples": ["calc 12*(8+3)", "c 3.14*8^2"],
+            "params": [
+                {
+                    "name": "expression",
+                    "label": "表达式",
+                    "placeholder": "例如: 12*(8+3)",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         if not query.strip():

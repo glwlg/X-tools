@@ -13,7 +13,14 @@ class HostsPlugin(PluginBase):
         return "快速切换和编辑系统 Hosts"
 
     def get_keywords(self):
-        return ["hosts"]
+        return ["hosts", "host"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "hosts",
+            "examples": ["hosts", "host"],
+            "params": [],
+        }
 
     def is_direct_action(self):
         return True

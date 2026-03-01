@@ -10,7 +10,21 @@ class UuidPlugin(PluginBase):
         return "生成随机 UUID (v4)"
 
     def get_keywords(self):
-        return ["uuid"]
+        return ["uuid", "guid"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "uuid [count]",
+            "examples": ["uuid", "uuid 10", "guid 3"],
+            "params": [
+                {
+                    "name": "count",
+                    "label": "数量",
+                    "placeholder": "默认 5，最大 50",
+                    "required": False,
+                }
+            ],
+        }
 
     def execute(self, query):
         # Even without query, we can offer to generate some

@@ -5,6 +5,10 @@ from PyQt6.QtWidgets import QApplication
 
 from src.core.plugin_base import PluginBase
 from src.ui.pinned_image_window import PinnedImageWindow
+from src.core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class QRCodePlugin(PluginBase):
@@ -18,7 +22,21 @@ class QRCodePlugin(PluginBase):
         return "生成二维码并在屏幕上贴图展示"
 
     def get_keywords(self):
-        return ["qr"]
+        return ["qr", "qrcode"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "qr <text>",
+            "examples": ["qr https://x-tools.app", "qrcode hello"],
+            "params": [
+                {
+                    "name": "text",
+                    "label": "二维码内容",
+                    "placeholder": "输入文本或链接",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()
@@ -69,7 +87,7 @@ class QRCodePlugin(PluginBase):
             self.pinned_windows.append(pin_win)
 
         except Exception as e:
-            print(f"QR Generation Error: {e}")
+            logger.exception("QR Generation Error: %s", e)
 
     def on_enter(self):
         pass

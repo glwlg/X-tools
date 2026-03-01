@@ -1,8 +1,12 @@
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
 )
 from qfluentwidgets import (
     FluentWindow,
@@ -15,7 +19,6 @@ from qfluentwidgets import (
     FluentIcon as FI,
     SettingCard,
     ComboBox,
-    setThemeColor,
     NavigationItemPosition,
     LargeTitleLabel,
 )
@@ -25,6 +28,8 @@ from PyQt6.QtGui import QKeyEvent, QIcon
 import os
 import json
 import sys
+
+from src.core.metrics import metrics_store
 
 
 class HotkeyRecordCard(PushSettingCard):
@@ -198,12 +203,6 @@ class SettingsWindow(FluentWindow):
         self.setWindowTitle("X-Tools 设置")
         self.setMinimumSize(960, 680)
 
-        # Apply vibrant modern accent color instead of default blue
-        if self.config_manager.get_theme_name() == "Dark":
-            setThemeColor("#4CC2FF")  # Icy modern blue for dark mode
-        else:
-            setThemeColor("#4455EE")
-
         # Enable acrylic/mica effect natively via FluentWindow
         self.windowEffect.setMicaEffect(
             self.winId(), isDarkMode=self.config_manager.get_theme_name() == "Dark"
@@ -243,6 +242,84 @@ class SettingsWindow(FluentWindow):
         self.startup_check.checkedChanged.connect(self.on_startup_changed)
         gen_group.addSettingCard(self.startup_check)
         self.page_gen.addGroup(gen_group)
+
+        screenshot_group = SettingCardGroup("截图自动化", self.page_gen)
+
+        self.screenshot_auto_copy_card = SwitchSettingCard(
+            FI.COPY,
+            "自动复制截图",
+            "完成截图动作后自动写入剪贴板",
+            parent=screenshot_group,
+        )
+        self.screenshot_auto_copy_card.checkedChanged.connect(
+            lambda state: self.on_config_switch_changed("screenshot_auto_copy", state)
+        )
+        screenshot_group.addSettingCard(self.screenshot_auto_copy_card)
+
+        self.screenshot_auto_pin_card = SwitchSettingCard(
+            FI.PIN,
+            "自动贴图",
+            "完成截图动作后自动创建贴图窗口",
+            parent=screenshot_group,
+        )
+        self.screenshot_auto_pin_card.checkedChanged.connect(
+            lambda state: self.on_config_switch_changed("screenshot_auto_pin", state)
+        )
+        screenshot_group.addSettingCard(self.screenshot_auto_pin_card)
+
+        self.screenshot_auto_save_card = SwitchSettingCard(
+            FI.SAVE,
+            "自动保存截图",
+            "完成截图动作后自动保存 PNG 文件",
+            parent=screenshot_group,
+        )
+        self.screenshot_auto_save_card.checkedChanged.connect(
+            lambda state: self.on_config_switch_changed("screenshot_auto_save", state)
+        )
+        screenshot_group.addSettingCard(self.screenshot_auto_save_card)
+
+        self.screenshot_dir_card = SettingCard(
+            FI.FOLDER,
+            "保存目录",
+            "自动保存截图的输出目录",
+            screenshot_group,
+        )
+        self.screenshot_dir_edit = QLineEdit(self.screenshot_dir_card)
+        self.screenshot_dir_edit.setReadOnly(True)
+        self.screenshot_dir_edit.setMinimumWidth(280)
+        self.screenshot_dir_edit.setMaximumWidth(380)
+        self.screenshot_dir_btn = QPushButton("选择")
+        self.screenshot_dir_btn.clicked.connect(self.on_pick_screenshot_dir)
+        self.screenshot_dir_card.hBoxLayout.addWidget(
+            self.screenshot_dir_edit, 0, Qt.AlignmentFlag.AlignRight
+        )
+        self.screenshot_dir_card.hBoxLayout.addWidget(
+            self.screenshot_dir_btn, 0, Qt.AlignmentFlag.AlignRight
+        )
+        self.screenshot_dir_card.hBoxLayout.addSpacing(16)
+        screenshot_group.addSettingCard(self.screenshot_dir_card)
+
+        self.screenshot_tpl_card = SettingCard(
+            FI.TAG,
+            "文件名模板",
+            "支持 {date} {time} {datetime} 占位符",
+            screenshot_group,
+        )
+        self.screenshot_tpl_edit = QLineEdit(self.screenshot_tpl_card)
+        self.screenshot_tpl_edit.setMinimumWidth(220)
+        self.screenshot_tpl_edit.setMaximumWidth(320)
+        self.screenshot_tpl_save_btn = QPushButton("保存")
+        self.screenshot_tpl_save_btn.clicked.connect(self.on_save_screenshot_template)
+        self.screenshot_tpl_card.hBoxLayout.addWidget(
+            self.screenshot_tpl_edit, 0, Qt.AlignmentFlag.AlignRight
+        )
+        self.screenshot_tpl_card.hBoxLayout.addWidget(
+            self.screenshot_tpl_save_btn, 0, Qt.AlignmentFlag.AlignRight
+        )
+        self.screenshot_tpl_card.hBoxLayout.addSpacing(16)
+        screenshot_group.addSettingCard(self.screenshot_tpl_card)
+
+        self.page_gen.addGroup(screenshot_group)
         self.page_gen.addStretch()
 
         # ─── Page 1: Appearance ───
@@ -366,19 +443,116 @@ class SettingsWindow(FluentWindow):
         self.page_hotkeys.addGroup(action_group)
         self.page_hotkeys.addStretch()
 
+        # ─── Page 4: Diagnostics ───
+        self.page_metrics = ScrollWidget("性能诊断", "page_metrics", self)
+        metrics_group = SettingCardGroup("运行指标", self.page_metrics)
+
+        self.metrics_text = PlainTextEdit(self.page_metrics.view)
+        self.metrics_text.setReadOnly(True)
+        self.metrics_text.setMinimumHeight(300)
+        self.metrics_text.setStyleSheet("font-family: 'Consolas', monospace;")
+        metrics_layout = metrics_group.layout()
+        if metrics_layout is not None:
+            metrics_layout.addWidget(self.metrics_text)
+
+        refresh_metrics_btn = PrimaryPushSettingCard(
+            "刷新",
+            FI.SYNC,
+            "刷新统计数据",
+            "查看启动、搜索、OCR 耗时分布",
+            parent=metrics_group,
+        )
+        refresh_metrics_btn.clicked.connect(self.refresh_metrics)
+        metrics_group.addSettingCard(refresh_metrics_btn)
+
+        clear_metrics_btn = PushSettingCard(
+            "清空",
+            FI.CANCEL,
+            "清空统计数据",
+            "删除本地性能统计记录",
+            parent=metrics_group,
+        )
+        clear_metrics_btn.clicked.connect(self.on_clear_metrics)
+        metrics_group.addSettingCard(clear_metrics_btn)
+
+        self.page_metrics.addGroup(metrics_group)
+        self.page_metrics.addStretch()
+
         # ─── Add Interfaces ───
         self.addSubInterface(self.page_gen, FI.SETTING, "通用")
         self.addSubInterface(self.page_app, FI.BRUSH, "外观")
         self.addSubInterface(self.page_plugins, FI.APPLICATION, "插件")
         self.addSubInterface(self.page_hotkeys, FI.COMMAND_PROMPT, "快捷键")
+        self.addSubInterface(self.page_metrics, FI.SYNC, "诊断")
 
     def load_settings(self):
         config = self.config_manager.config
 
         self.startup_check.setChecked(config.get("run_on_startup", False))
+        self.screenshot_auto_copy_card.setChecked(
+            config.get("screenshot_auto_copy", False)
+        )
+        self.screenshot_auto_pin_card.setChecked(
+            config.get("screenshot_auto_pin", False)
+        )
+        self.screenshot_auto_save_card.setChecked(
+            config.get("screenshot_auto_save", False)
+        )
+        self.screenshot_dir_edit.setText(
+            config.get("screenshot_save_dir", os.path.expanduser("~"))
+        )
+        self.screenshot_tpl_edit.setText(
+            config.get("screenshot_filename_template", "x-tools_{date}_{time}")
+        )
 
         json_str = json.dumps(self.config_manager.themes, indent=4, ensure_ascii=False)
         self.theme_editor.setPlainText(json_str)
+        self.refresh_metrics()
+
+    def on_config_switch_changed(self, key, state):
+        self.config_manager.set_value(key, bool(state))
+
+    def on_pick_screenshot_dir(self):
+        current = self.config_manager.get_value(
+            "screenshot_save_dir", os.path.expanduser("~")
+        )
+        folder = QFileDialog.getExistingDirectory(self, "选择截图保存目录", current)
+        if not folder:
+            return
+        self.screenshot_dir_edit.setText(folder)
+        self.config_manager.set_value("screenshot_save_dir", folder)
+
+    def on_save_screenshot_template(self):
+        template = self.screenshot_tpl_edit.text().strip()
+        if not template:
+            QMessageBox.warning(self, "提示", "文件名模板不能为空")
+            return
+        self.config_manager.set_value("screenshot_filename_template", template)
+        QMessageBox.information(self, "成功", "截图文件名模板已保存")
+
+    def refresh_metrics(self):
+        text = metrics_store.format_summary(
+            [
+                "startup.total",
+                "search.global",
+                "search.inline_plugin",
+                "ocr.inference",
+                "screenshot.save",
+            ]
+        )
+        self.metrics_text.setPlainText(text)
+
+    def on_clear_metrics(self):
+        reply = QMessageBox.question(
+            self,
+            "确认清空",
+            "确认清空所有性能统计数据吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            metrics_store.clear()
+            self.refresh_metrics()
 
     def on_theme_changed(self, text):
         self.config_manager.config["theme"] = text

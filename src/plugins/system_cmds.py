@@ -11,7 +11,24 @@ class SystemCommandsPlugin(PluginBase):
         return "系统快捷控制 (锁屏、休眠等)"
 
     def get_keywords(self):
-        return ["sys"]
+        return ["sys", "system"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "sys <command>",
+            "examples": ["sys lock", "system sleep", "sys empty"],
+            "params": [
+                {
+                    "name": "command",
+                    "label": "命令",
+                    "placeholder": "lock / sleep / empty / shutdown / restart",
+                    "required": True,
+                }
+            ],
+        }
+
+    def is_dangerous_command(self, cmd):
+        return cmd in {"shutdown", "restart"}
 
     def execute(self, query):
         query = query.strip().lower()

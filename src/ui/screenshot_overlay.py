@@ -18,6 +18,12 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QButtonGroup,
 )
+from datetime import datetime
+import time
+import os
+
+cv2 = None
+np = None
 
 try:
     import cv2
@@ -28,6 +34,12 @@ except ImportError:
     CV2_AVAILABLE = False
 
 from src.ui.pinned_image_window import PinnedImageWindow
+from src.core.logger import get_logger
+from src.core.config import config_manager
+from src.core.metrics import metrics_store
+
+
+logger = get_logger(__name__)
 
 
 class ScreenshotOverlay(QWidget):
@@ -129,6 +141,10 @@ class ScreenshotOverlay(QWidget):
             painter.drawArc(4, 4, 16, 16, 16 * 16, 180 * 16)
             painter.drawLine(4, 12, 0, 8)
             painter.drawLine(4, 12, 8, 8)
+        elif mode == "redo":
+            painter.drawArc(4, 4, 16, 16, -16 * 16, -180 * 16)
+            painter.drawLine(20, 12, 24, 8)
+            painter.drawLine(20, 12, 16, 8)
         elif mode == "copy":
             painter.drawRect(8, 8, 12, 12)
             painter.drawLine(4, 8, 4, 16)
@@ -251,6 +267,14 @@ class ScreenshotOverlay(QWidget):
         btn_undo.setToolTip("撤销")
         btn_undo.clicked.connect(self.undo_action)
         tools_layout.addWidget(btn_undo)
+
+        btn_redo = QPushButton()
+        btn_redo.setIcon(self.create_icon("redo"))
+        btn_redo.setIconSize(QSize(18, 18))
+        btn_redo.setToolTip("重做")
+        btn_redo.clicked.connect(self.redo_action)
+        tools_layout.addWidget(btn_redo)
+
         tools_layout.addSpacing(10)
 
         btn_copy = QPushButton()
@@ -258,28 +282,29 @@ class ScreenshotOverlay(QWidget):
         btn_copy.setIconSize(QSize(18, 18))
         btn_copy.setToolTip("复制到剪贴板 (Enter)")
         btn_copy.clicked.connect(self.on_copy_clicked)
-        tools_layout.addWidget(btn_copy)
 
         btn_pin = QPushButton()
         btn_pin.setIcon(self.create_icon("pin"))
         btn_pin.setIconSize(QSize(18, 18))
         btn_pin.setToolTip("贴图 (P)")
         btn_pin.clicked.connect(self.on_pin_clicked)
-        tools_layout.addWidget(btn_pin)
 
         btn_qr = QPushButton()
         btn_qr.setIcon(self.create_icon("qr"))
         btn_qr.setIconSize(QSize(18, 18))
         btn_qr.setToolTip("扫码 (Q)")
         btn_qr.clicked.connect(self.on_qr_clicked)
-        tools_layout.addWidget(btn_qr)
 
         btn_cancel = QPushButton()
         btn_cancel.setIcon(self.create_icon("close"))
         btn_cancel.setIconSize(QSize(18, 18))
         btn_cancel.setToolTip("退出 (Esc)")
         btn_cancel.clicked.connect(self.close_overlay)
+
+        tools_layout.addWidget(btn_pin)
+        tools_layout.addWidget(btn_qr)
         tools_layout.addWidget(btn_cancel)
+        tools_layout.addWidget(btn_copy)
 
         main_layout.addWidget(self.tools_row)
         self.toolbar_widget.hide()
@@ -317,6 +342,11 @@ class ScreenshotOverlay(QWidget):
             self.redo_actions.append(self.draw_actions.pop())
             self.update()
 
+    def redo_action(self):
+        if self.redo_actions:
+            self.draw_actions.append(self.redo_actions.pop())
+            self.update()
+
     def update_text_input_style(self):
         font_size = max(12, 12 + self.draw_thickness * 2)
         self.text_input.setStyleSheet(
@@ -341,6 +371,7 @@ class ScreenshotOverlay(QWidget):
                         "font_size": max(12, 12 + self.draw_thickness * 2),
                     }
                 )
+                self.redo_actions.clear()
             self.text_input.clear()
             self.text_input.hide()
             self.update()
@@ -358,21 +389,34 @@ class ScreenshotOverlay(QWidget):
         self.toolbar_widget.raise_()
 
     def on_copy_clicked(self):
-        self.copy_selection()
-        self.close_overlay()
+        self.finalize_capture(manual_copy=True)
 
     def on_pin_clicked(self):
-        self.pin_selection()
-        self.close_overlay()
+        self.finalize_capture(manual_pin=True)
 
     def on_qr_clicked(self):
         self.recognize_qr()
         self.close_overlay()
 
     def capture_screen(self):
-        screen = QApplication.primaryScreen()
-        # Grab the whole primary screen
-        self.screen_pixmap = screen.grabWindow(0)
+        screens = QApplication.screens()
+        if not screens:
+            return
+
+        virtual_rect = screens[0].geometry()
+        for screen in screens[1:]:
+            virtual_rect = virtual_rect.united(screen.geometry())
+
+        self.screen_pixmap = QPixmap(virtual_rect.size())
+        self.screen_pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(self.screen_pixmap)
+        for screen in screens:
+            shot = screen.grabWindow(0)
+            offset = screen.geometry().topLeft() - virtual_rect.topLeft()
+            painter.drawPixmap(offset, shot)
+        painter.end()
+
         self.screen_image = self.screen_pixmap.toImage()
 
         # Precompute mosaic
@@ -407,7 +451,7 @@ class ScreenshotOverlay(QWidget):
         self.text_input.hide()
         self.toolbar_widget.hide()
 
-        self.setGeometry(screen.geometry())
+        self.setGeometry(virtual_rect)
         self.show()
         self.activateWindow()
 
@@ -587,7 +631,8 @@ class ScreenshotOverlay(QWidget):
                 painter.setFont(f)
 
                 # Line 1: coordinates
-                coord_text = f"({cursor_pos.x()}, {cursor_pos.y()})"
+                global_pos = self.mapToGlobal(cursor_pos)
+                coord_text = f"({global_pos.x()}, {global_pos.y()})"
                 painter.drawText(
                     QRect(mag_x, mag_y + mag_h + 5, mag_w, 15),
                     Qt.AlignmentFlag.AlignCenter,
@@ -922,6 +967,7 @@ class ScreenshotOverlay(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self.current_action:
                 self.draw_actions.append(self.current_action)
+                self.redo_actions.clear()
                 self.current_action = None
                 self.update()
                 return
@@ -950,13 +996,20 @@ class ScreenshotOverlay(QWidget):
         ):
             self.undo_action()
         elif (
+            event.key() == Qt.Key.Key_Y
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self.redo_action()
+        elif event.key() == Qt.Key.Key_Z and event.modifiers() == (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        ):
+            self.redo_action()
+        elif (
             event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter
         ) and not self.selection_rect.isNull():
-            self.copy_selection()
-            self.close_overlay()
+            self.finalize_capture(manual_copy=True)
         elif event.key() == Qt.Key.Key_P and not self.selection_rect.isNull():
-            self.pin_selection()
-            self.close_overlay()
+            self.finalize_capture(manual_pin=True)
         elif (
             event.key() == Qt.Key.Key_C
             and not self.current_mouse_pos.isNull()
@@ -993,27 +1046,111 @@ class ScreenshotOverlay(QWidget):
     def pin_selection(self):
         pixmap = self.get_selected_pixmap()
         if pixmap:
-            pin_win = PinnedImageWindow(pixmap)
-            # Move it to where it was selected, offset by the 15px layout margin used for the drop shadow
-            pin_win.move(self.selection_rect.topLeft() - QPoint(15, 15))
-            pin_win.show()
-
-            # Start OCR in background silently
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(100, pin_win.recognize_text)
-
-            self.pinned_windows.append(pin_win)
+            self._pin_pixmap(pixmap)
 
     def copy_selection(self):
         pixmap = self.get_selected_pixmap()
         if pixmap:
             QApplication.clipboard().setPixmap(pixmap)
 
+    def _build_screenshot_filename(self):
+        template = str(
+            config_manager.get_value(
+                "screenshot_filename_template", "x-tools_{date}_{time}"
+            )
+        ).strip()
+        if not template:
+            template = "x-tools_{date}_{time}"
+
+        now = datetime.now()
+        safe_name = (
+            template.replace("{date}", now.strftime("%Y%m%d"))
+            .replace("{time}", now.strftime("%H%M%S"))
+            .replace("{datetime}", now.strftime("%Y%m%d_%H%M%S"))
+        )
+
+        invalid_chars = '<>:"/\\|?*'
+        for ch in invalid_chars:
+            safe_name = safe_name.replace(ch, "_")
+
+        safe_name = safe_name.strip().strip(".")
+        if not safe_name:
+            safe_name = f"x-tools_{now.strftime('%Y%m%d_%H%M%S')}"
+        return safe_name + ".png"
+
+    def _auto_save_pixmap(self, pixmap):
+        if not config_manager.get_value("screenshot_auto_save", False):
+            return None
+
+        save_dir = str(
+            config_manager.get_value(
+                "screenshot_save_dir",
+                os.path.join(
+                    os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
+                ),
+            )
+        ).strip()
+        if not save_dir:
+            save_dir = os.path.join(
+                os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
+            )
+
+        os.makedirs(save_dir, exist_ok=True)
+        file_name = self._build_screenshot_filename()
+        output_path = os.path.join(save_dir, file_name)
+
+        started = time.perf_counter()
+        ok = pixmap.save(output_path, "PNG")
+        elapsed = (time.perf_counter() - started) * 1000
+        metrics_store.record(
+            "screenshot.save",
+            elapsed,
+            {"ok": bool(ok), "path": output_path},
+        )
+
+        if ok:
+            logger.info("Screenshot saved: %s", output_path)
+            return output_path
+
+        logger.warning("Failed to save screenshot: %s", output_path)
+        return None
+
+    def _pin_pixmap(self, pixmap):
+        pin_win = PinnedImageWindow(pixmap)
+
+        global_top_left = self.mapToGlobal(self.selection_rect.topLeft())
+        pin_win.move(global_top_left - QPoint(15, 15))
+        pin_win.show()
+
+        from PyQt6.QtCore import QTimer
+
+        QTimer.singleShot(100, pin_win.recognize_text)
+        self.pinned_windows.append(pin_win)
+
+    def finalize_capture(self, manual_copy=False, manual_pin=False):
+        pixmap = self.get_selected_pixmap()
+        if not pixmap:
+            return
+
+        auto_copy = bool(config_manager.get_value("screenshot_auto_copy", False))
+        auto_pin = bool(config_manager.get_value("screenshot_auto_pin", False))
+
+        if manual_copy or auto_copy:
+            QApplication.clipboard().setPixmap(pixmap)
+
+        if manual_pin or auto_pin:
+            self._pin_pixmap(pixmap)
+
+        self._auto_save_pixmap(pixmap)
+        self.close_overlay()
+
     def recognize_qr(self):
         pixmap = self.get_selected_pixmap()
         if not pixmap or not CV2_AVAILABLE:
             return
+
+        import cv2 as cv2_mod
+        import numpy as np_mod
 
         image = pixmap.toImage()
         width = image.width()
@@ -1027,18 +1164,20 @@ class ScreenshotOverlay(QWidget):
 
         try:
             # Create a numpy array from the buffer
-            arr = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
+            arr = np_mod.frombuffer(buffer, dtype=np_mod.uint8).reshape(
+                (height, width, 4)
+            )
             # Convert BGRA to grayscale for QR detection
-            gray = cv2.cvtColor(arr, cv2.COLOR_BGRA2GRAY)
+            gray = cv2_mod.cvtColor(arr, cv2_mod.COLOR_BGRA2GRAY)
 
-            detector = cv2.QRCodeDetector()
+            detector = cv2_mod.QRCodeDetector()
             data, bbox, straight_qrcode = detector.detectAndDecode(gray)
 
             if data:
                 QApplication.clipboard().setText(data)
-                print(f"QR Decoded: {data}")
+                logger.info("QR decoded and copied to clipboard")
         except Exception as e:
-            print(f"QR Decode Error: {e}")
+            logger.warning("QR decode error: %s", e)
 
     def close_overlay(self):
         self.hide()

@@ -2,8 +2,12 @@ import json
 import winreg
 import sys
 import os
+from src.core.logger import get_logger
 
-CONFIG_DIR = os.path.join(os.getenv("APPDATA"), "x-tools")
+
+logger = get_logger(__name__)
+
+CONFIG_DIR = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "x-tools")
 if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR)
 
@@ -19,6 +23,13 @@ DEFAULT_CONFIG = {
     "theme": "Dark",
     "plugins_enabled": {},
     "hotkeys": DEFAULT_HOTKEYS.copy(),
+    "screenshot_auto_save": False,
+    "screenshot_auto_copy": False,
+    "screenshot_auto_pin": False,
+    "screenshot_save_dir": os.path.join(
+        os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
+    ),
+    "screenshot_filename_template": "x-tools_{date}_{time}",
 }
 
 THEME_FILE = os.path.join(CONFIG_DIR, "themes.json")
@@ -63,7 +74,20 @@ class ConfigManager:
 
         try:
             with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
+                loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    return DEFAULT_CONFIG.copy()
+
+                merged = DEFAULT_CONFIG.copy()
+                merged.update(loaded)
+
+                if not isinstance(merged.get("hotkeys"), dict):
+                    merged["hotkeys"] = DEFAULT_HOTKEYS.copy()
+
+                if not isinstance(merged.get("plugins_enabled"), dict):
+                    merged["plugins_enabled"] = {}
+
+                return merged
         except:
             return DEFAULT_CONFIG.copy()
 
@@ -72,7 +96,7 @@ class ConfigManager:
             with open(CONFIG_FILE, "w") as f:
                 json.dump(self.config, f, indent=4)
         except Exception as e:
-            print(f"Error saving config: {e}")
+            logger.warning("Error saving config: %s", e)
 
     def load_themes(self):
         if not os.path.exists(THEME_FILE):
@@ -101,7 +125,7 @@ class ConfigManager:
             with open(THEME_FILE, "w") as f:
                 json.dump(self.themes, f, indent=4)
         except Exception as e:
-            print(f"Error saving themes: {e}")
+            logger.warning("Error saving themes: %s", e)
 
     def get_theme_name(self):
         return self.config.get("theme", "Dark")
@@ -121,6 +145,13 @@ class ConfigManager:
         if "hotkeys" not in self.config:
             self.config["hotkeys"] = DEFAULT_HOTKEYS.copy()
         self.config["hotkeys"][action] = key_str
+        self.save_config()
+
+    def get_value(self, key: str, default=None):
+        return self.config.get(key, default)
+
+    def set_value(self, key: str, value):
+        self.config[key] = value
         self.save_config()
 
     def set_startup(self, enable=True):
@@ -155,7 +186,7 @@ class ConfigManager:
             self.save_config()
             return True
         except Exception as e:
-            print(f"Registry error: {e}")
+            logger.warning("Registry error: %s", e)
             return False
 
 

@@ -3,6 +3,10 @@ import sys
 import importlib.util
 import inspect
 from src.core.plugin_base import PluginBase
+from src.core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class PluginManager:
@@ -22,25 +26,28 @@ class PluginManager:
             ]
             for path in candidates:
                 if os.path.isdir(path):
-                    print(f"[PluginManager] Found plugin dir (frozen): {path}")
+                    logger.info("[PluginManager] Found plugin dir (frozen): %s", path)
                     return path
-            print(
-                f"[PluginManager] WARNING: No plugin dir found in frozen mode. Searched: {candidates}"
+            logger.warning(
+                "[PluginManager] No plugin dir found in frozen mode. Searched: %s",
+                candidates,
             )
             return candidates[0]  # Return first candidate for logging purposes
         else:
             # Dev mode: relative to this file (src/core/plugin_manager.py -> src/plugins/)
             path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
-            print(f"[PluginManager] Plugin dir (dev): {path}")
+            logger.info("[PluginManager] Plugin dir (dev): %s", path)
             return path
 
     def load_plugins(self):
         self.plugins = []
         if not os.path.exists(self.plugin_dir):
-            print(f"[PluginManager] Plugin directory does not exist: {self.plugin_dir}")
+            logger.warning(
+                "[PluginManager] Plugin directory does not exist: %s", self.plugin_dir
+            )
             return
 
-        print(f"[PluginManager] Scanning plugins in: {self.plugin_dir}")
+        logger.info("[PluginManager] Scanning plugins in: %s", self.plugin_dir)
         for filename in os.listdir(self.plugin_dir):
             if filename.endswith(".py") and not filename.startswith("__"):
                 module_path = os.path.join(self.plugin_dir, filename)
@@ -50,8 +57,17 @@ class PluginManager:
                     spec = importlib.util.spec_from_file_location(
                         module_name, module_path
                     )
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
+                    if spec is None or spec.loader is None:
+                        logger.warning(
+                            "[PluginManager] Skip plugin %s due to invalid module spec",
+                            filename,
+                        )
+                        continue
+
+                    module_spec = spec
+                    loader = module_spec.loader
+                    module = importlib.util.module_from_spec(module_spec)
+                    loader.exec_module(module)
 
                     for name, obj in inspect.getmembers(module):
                         if (
@@ -60,9 +76,13 @@ class PluginManager:
                             and obj is not PluginBase
                         ):
                             self.plugins.append(obj())
-                            print(f"[PluginManager] Loaded plugin: {obj.__name__}")
+                            logger.info(
+                                "[PluginManager] Loaded plugin: %s", obj.__name__
+                            )
                 except Exception as e:
-                    print(f"[PluginManager] Failed to load plugin {filename}: {e}")
+                    logger.exception(
+                        "[PluginManager] Failed to load plugin %s: %s", filename, e
+                    )
 
     def get_plugins(self, enabled_only=True):
         if not enabled_only:

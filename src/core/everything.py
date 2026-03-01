@@ -2,6 +2,11 @@ import ctypes
 import os
 import threading
 import sys
+from typing import Any
+from src.core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 # Define constants
@@ -25,7 +30,7 @@ EVERYTHING_REQUEST_HIGHLIGHTED_FULL_PATH_AND_FILE_NAME = 0x00008000
 
 class Everything:
     def __init__(self):
-        self.dll = None
+        self.dll: Any = None
         self.lock = threading.Lock()
         self._load_dll()
 
@@ -56,10 +61,10 @@ class Everything:
 
                     self.dll = ctypes.WinDLL(path)
                     self._setup_signatures()
-                    print(f"Everything SDK loaded from: {path}")
+                    logger.info("Everything SDK loaded from: %s", path)
                     return
                 except Exception as e:
-                    print(f"Failed to load {path}: {e}")
+                    logger.warning("Failed to load %s: %s", path, e)
 
         # If not found, try loading without path (if in PATH)
         try:
@@ -72,16 +77,20 @@ class Everything:
 
     def _setup_signatures(self):
         # Setup return types and argument types
-        self.dll.Everything_SetSearchW.argtypes = [ctypes.c_wchar_p]
-        self.dll.Everything_SetRequestFlags.argtypes = [ctypes.c_uint32]
-        self.dll.Everything_QueryW.argtypes = [ctypes.c_bool]
-        self.dll.Everything_QueryW.restype = ctypes.c_bool
-        self.dll.Everything_GetNumResults.restype = ctypes.c_uint32
-        self.dll.Everything_GetResultFileNameW.argtypes = [ctypes.c_uint32]
-        self.dll.Everything_GetResultFileNameW.restype = ctypes.c_wchar_p
-        self.dll.Everything_GetResultPathW.argtypes = [ctypes.c_uint32]
-        self.dll.Everything_GetResultPathW.restype = ctypes.c_wchar_p
-        self.dll.Everything_SetMax.argtypes = [ctypes.c_uint32]
+        if self.dll is None:
+            return
+
+        dll = self.dll
+        dll.Everything_SetSearchW.argtypes = [ctypes.c_wchar_p]
+        dll.Everything_SetRequestFlags.argtypes = [ctypes.c_uint32]
+        dll.Everything_QueryW.argtypes = [ctypes.c_bool]
+        dll.Everything_QueryW.restype = ctypes.c_bool
+        dll.Everything_GetNumResults.restype = ctypes.c_uint32
+        dll.Everything_GetResultFileNameW.argtypes = [ctypes.c_uint32]
+        dll.Everything_GetResultFileNameW.restype = ctypes.c_wchar_p
+        dll.Everything_GetResultPathW.argtypes = [ctypes.c_uint32]
+        dll.Everything_GetResultPathW.restype = ctypes.c_wchar_p
+        dll.Everything_SetMax.argtypes = [ctypes.c_uint32]
 
     def search(self, query, max_results=20):
         with self.lock:
@@ -111,7 +120,7 @@ class Everything:
 
                 return results
             except Exception as e:
-                print(f"Everything search error: {e}")
+                logger.exception("Everything search error: %s", e)
                 return []
 
 
@@ -120,4 +129,4 @@ everything_client = None
 try:
     everything_client = Everything()
 except FileNotFoundError:
-    print("Warning: Everything DLL not found. Search will not work.")
+    logger.warning("Everything DLL not found. Search will not work.")

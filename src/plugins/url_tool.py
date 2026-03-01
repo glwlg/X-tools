@@ -10,7 +10,21 @@ class UrlPlugin(PluginBase):
         return "对 URL 进行编码或解码"
 
     def get_keywords(self):
-        return ["u"]
+        return ["u", "url"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "url <text-or-url>",
+            "examples": ["url https://a.com?q=中文", "u hello world"],
+            "params": [
+                {
+                    "name": "value",
+                    "label": "文本或 URL",
+                    "placeholder": "输入待编码/解码内容",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()

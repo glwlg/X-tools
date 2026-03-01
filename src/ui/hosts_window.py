@@ -2,6 +2,7 @@ import os
 import tempfile
 import json
 import re
+import difflib
 import uuid
 import sys
 from PyQt6.QtCore import (
@@ -9,6 +10,9 @@ from PyQt6.QtCore import (
     QRect,
     QSize,
     QFileSystemWatcher,
+    QTimer,
+    QThread,
+    pyqtSignal,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -29,6 +33,8 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QLabel,
     QFormLayout,
+    QDialog,
+    QDialogButtonBox,
 )
 from qfluentwidgets import (
     PushButton,
@@ -42,12 +48,49 @@ from qfluentwidgets import (
     isDarkTheme,
 )
 from qframelesswindow import AcrylicWindow
+from src.core.logger import get_logger
 
 HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 DB_PATH = os.path.join(os.path.expanduser("~"), ".x-tools", "hosts_profiles.json")
 
 XTOOLS_START_MARKER = "# ================= X-TOOLS HOSTS START ================="
 XTOOLS_END_MARKER = "# ================= X-TOOLS HOSTS END ================="
+
+
+logger = get_logger(__name__)
+
+
+class RemoteHostsFetchThread(QThread):
+    fetched = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, profile_id, url, parent=None):
+        super().__init__(parent)
+        self.profile_id = profile_id
+        self.url = url
+
+    @staticmethod
+    def _decode_content(content_bytes):
+        for enc in ["utf-8-sig", "utf-8", "gb18030", "gbk"]:
+            try:
+                return content_bytes.decode(enc)
+            except Exception:
+                continue
+        return content_bytes.decode("utf-8", errors="replace")
+
+    def run(self):
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(
+                self.url, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read()
+
+            self.fetched.emit(self.profile_id, self._decode_content(content))
+        except Exception as e:
+            self.failed.emit(self.profile_id, str(e))
 
 
 class HostsSyntaxHighlighter(QSyntaxHighlighter):
@@ -236,6 +279,12 @@ class HostsWindow(AcrylicWindow):
         self.current_profile_id = None
         self._prevent_save = False
         self._is_applying = False
+        self._remote_fetch_thread = None
+
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self.save_profiles)
 
         self.init_ui()
         self.update_style()
@@ -245,6 +294,14 @@ class HostsWindow(AcrylicWindow):
         if os.path.exists(HOSTS_PATH):
             self.file_watcher.addPath(HOSTS_PATH)
         self.file_watcher.fileChanged.connect(self.on_hosts_file_changed)
+
+    def _schedule_profiles_save(self):
+        self._save_timer.start()
+
+    def _flush_pending_save(self):
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self.save_profiles()
 
     def resolve_resource_path(self, filename):
         if getattr(sys, "frozen", False):
@@ -510,7 +567,7 @@ class HostsWindow(AcrylicWindow):
                                 "type": "local",
                             }
             except Exception as e:
-                print(f"Error loading hosts profiles: {e}")
+                logger.warning("Error loading hosts profiles: %s", e)
                 self.profiles = {}
 
         sys_hosts = ""
@@ -541,7 +598,7 @@ class HostsWindow(AcrylicWindow):
             with open(DB_PATH, "w", encoding="utf-8") as f:
                 json.dump(self.profiles, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            print(f"Error saving hosts profiles: {e}")
+            logger.warning("Error saving hosts profiles: %s", e)
 
     def update_list(self):
         self.list_widget.clear()
@@ -610,7 +667,7 @@ class HostsWindow(AcrylicWindow):
     def on_switch_toggled(self, pid, checked):
         if pid in self.profiles:
             self.profiles[pid]["enabled"] = checked
-            self.save_profiles()
+            self._schedule_profiles_save()
 
     def on_profile_selected(self, index):
         if index < 0 or index >= self.list_widget.count():
@@ -649,7 +706,7 @@ class HostsWindow(AcrylicWindow):
             self.profiles[self.current_profile_id]["content"] = (
                 self.text_editor.toPlainText()
             )
-            self.save_profiles()
+            self._schedule_profiles_save()
 
     def on_title_changed(self, text):
         if (
@@ -658,7 +715,7 @@ class HostsWindow(AcrylicWindow):
             and self.current_profile_id in self.profiles
         ):
             self.profiles[self.current_profile_id]["title"] = text
-            self.save_profiles()
+            self._schedule_profiles_save()
 
             for i in range(self.list_widget.count()):
                 it = self.list_widget.item(i)
@@ -684,7 +741,7 @@ class HostsWindow(AcrylicWindow):
             new_type = "remote" if is_remote else "local"
             if self.profiles[self.current_profile_id].get("type") != new_type:
                 self.profiles[self.current_profile_id]["type"] = new_type
-                self.save_profiles()
+                self._schedule_profiles_save()
 
     def on_url_changed(self, text):
         if (
@@ -693,10 +750,13 @@ class HostsWindow(AcrylicWindow):
             and self.current_profile_id in self.profiles
         ):
             self.profiles[self.current_profile_id]["url"] = text
-            self.save_profiles()
+            self._schedule_profiles_save()
 
     def update_remote_hosts(self):
         if not self.current_profile_id or self.current_profile_id not in self.profiles:
+            return
+
+        if self._remote_fetch_thread and self._remote_fetch_thread.isRunning():
             return
 
         url = self.profiles[self.current_profile_id].get("url", "").strip()
@@ -704,33 +764,144 @@ class HostsWindow(AcrylicWindow):
             QMessageBox.warning(self, "提示", "请先输入有效的远程 Hosts 地址(URL)。")
             return
 
-        import urllib.request
-        import urllib.error
-
         self.btn_update_remote.setText("拉取中...")
         self.btn_update_remote.setEnabled(False)
         self.repaint()
 
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                content = response.read().decode("utf-8")
+        profile_id = self.current_profile_id
+        self._remote_fetch_thread = RemoteHostsFetchThread(profile_id, url, self)
+        self._remote_fetch_thread.fetched.connect(self._on_remote_hosts_fetched)
+        self._remote_fetch_thread.failed.connect(self._on_remote_hosts_failed)
+        self._remote_fetch_thread.finished.connect(self._cleanup_remote_fetch_thread)
+        self._remote_fetch_thread.start()
 
-            self.profiles[self.current_profile_id]["content"] = content
-            self.save_profiles()
+    def _on_remote_hosts_fetched(self, profile_id, content):
+        if profile_id not in self.profiles:
+            return
 
+        self.profiles[profile_id]["content"] = content
+        self._schedule_profiles_save()
+
+        if self.current_profile_id == profile_id:
             self._prevent_save = True
             self.text_editor.setPlainText(content)
             self._prevent_save = False
 
-            QMessageBox.information(self, "成功", "远程 Hosts 方案已成功拉取并更新。")
+        QMessageBox.information(self, "成功", "远程 Hosts 方案已成功拉取并更新。")
+
+    def _on_remote_hosts_failed(self, profile_id, error_msg):
+        logger.warning("Failed to fetch remote hosts for %s: %s", profile_id, error_msg)
+        QMessageBox.critical(self, "更新失败", f"发生错误: {error_msg}")
+
+    def _cleanup_remote_fetch_thread(self):
+        self.btn_update_remote.setText("⬇️ 立即拉取更新")
+        self.btn_update_remote.setEnabled(True)
+        if self._remote_fetch_thread:
+            self._remote_fetch_thread.deleteLater()
+            self._remote_fetch_thread = None
+
+    @staticmethod
+    def _extract_hosts_mapping(content):
+        mapping = {}
+        for raw in content.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+
+            parts = re.split(r"\s+", line)
+            if len(parts) < 2:
+                continue
+
+            ip = parts[0].strip()
+            if not re.match(r"^(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]+)$", ip):
+                continue
+
+            for host in parts[1:]:
+                host_key = host.strip().lower()
+                if not host_key:
+                    continue
+                mapping.setdefault(host_key, set()).add(ip)
+
+        return mapping
+
+    def _detect_hosts_conflicts(self, content):
+        mapping = self._extract_hosts_mapping(content)
+        conflicts = []
+        for host, ips in mapping.items():
+            if len(ips) > 1:
+                conflicts.append((host, sorted(ips)))
+        conflicts.sort(key=lambda item: item[0])
+        return conflicts
+
+    def _show_apply_preview(self, final_content):
+        current_content = ""
+        try:
+            if os.path.exists(HOSTS_PATH):
+                with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+                    current_content = f.read()
         except Exception as e:
-            QMessageBox.critical(self, "更新失败", f"发生错误: {str(e)}")
-        finally:
-            self.btn_update_remote.setText("⬇️ 立即拉取更新")
-            self.btn_update_remote.setEnabled(True)
+            logger.warning("Failed to read current hosts for diff preview: %s", e)
+
+        diff_lines = list(
+            difflib.unified_diff(
+                current_content.splitlines(),
+                final_content.splitlines(),
+                fromfile="current_hosts",
+                tofile="new_hosts",
+                lineterm="",
+            )
+        )
+        diff_text = "\n".join(diff_lines) if diff_lines else "(无差异)"
+
+        conflicts = self._detect_hosts_conflicts(final_content)
+        conflict_preview = "\n".join(
+            [f"- {host}: {', '.join(ips)}" for host, ips in conflicts[:20]]
+        )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("应用前预览")
+        dialog.resize(960, 640)
+
+        layout = QVBoxLayout(dialog)
+
+        summary_label = QLabel(
+            f"本次将写入 Hosts，共 {len(final_content.splitlines())} 行。\n"
+            f"冲突域名数量: {len(conflicts)}"
+        )
+        summary_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(summary_label)
+
+        if conflicts:
+            conflict_label = QLabel("检测到同域名多 IP 冲突，请重点检查下方列表：")
+            conflict_label.setStyleSheet("color: #d9534f; font-weight: bold;")
+            layout.addWidget(conflict_label)
+
+            conflict_box = QPlainTextEdit(dialog)
+            conflict_box.setReadOnly(True)
+            conflict_box.setPlainText(conflict_preview)
+            conflict_box.setMinimumHeight(120)
+            layout.addWidget(conflict_box)
+
+        diff_box = QPlainTextEdit(dialog)
+        diff_box.setReadOnly(True)
+        diff_box.setPlainText(diff_text)
+        layout.addWidget(diff_box)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确认应用")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     def apply_hosts(self):
+        self._flush_pending_save()
+
         base_system_hosts = ""
         if "系统 Hosts" in self.profiles:
             content = self.profiles["系统 Hosts"].get("content", "")
@@ -784,6 +955,9 @@ class HostsWindow(AcrylicWindow):
             if final_content:
                 final_content += "\n\n"
             final_content += f"{XTOOLS_START_MARKER}\n{injected_content.strip()}\n{XTOOLS_END_MARKER}\n"
+
+        if not self._show_apply_preview(final_content):
+            return
 
         import subprocess
 
@@ -949,4 +1123,11 @@ try {{
                             self.text_editor.verticalScrollBar().setValue(scroll_val)
                             self._prevent_save = False
         except Exception as e:
-            print(f"Error handling external hosts file modification: {e}")
+            logger.warning("Error handling external hosts file modification: %s", e)
+
+    def closeEvent(self, event):
+        self._flush_pending_save()
+        if self._remote_fetch_thread and self._remote_fetch_thread.isRunning():
+            self._remote_fetch_thread.quit()
+            self._remote_fetch_thread.wait(1000)
+        super().closeEvent(event)

@@ -8,7 +8,34 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
+    QFileDialog,
 )
+import threading
+import csv
+import io
+import json
+import time
+import urllib.parse
+import urllib.request
+from src.core.logger import get_logger
+from src.core.metrics import metrics_store
+
+
+logger = get_logger(__name__)
+_OCR_ENGINE = None
+_OCR_ENGINE_LOCK = threading.Lock()
+_OCR_INFER_LOCK = threading.Lock()
+
+
+def get_ocr_engine():
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        with _OCR_ENGINE_LOCK:
+            if _OCR_ENGINE is None:
+                from rapidocr_onnxruntime import RapidOCR
+
+                _OCR_ENGINE = RapidOCR()
+    return _OCR_ENGINE
 
 
 class OCRWorker(QThread):
@@ -21,10 +48,9 @@ class OCRWorker(QThread):
 
     def run(self):
         try:
-            from rapidocr_onnxruntime import RapidOCR
             import numpy as np
 
-            ocr = RapidOCR()
+            ocr = get_ocr_engine()
             image = self.pixmap.toImage()
             image = image.convertToFormat(QImage.Format.Format_RGBA8888)
             width, height = image.width(), image.height()
@@ -36,11 +62,73 @@ class OCRWorker(QThread):
             )
             arr = arr[:, :, :3]  # Drop alpha channel
 
-            result, elapse = ocr(arr)
+            with _OCR_INFER_LOCK:
+                result, elapse = ocr(arr)
+
+            elapsed_ms = 0.0
+            try:
+                elapsed_val = float(elapse)
+                elapsed_ms = elapsed_val * (1000.0 if elapsed_val < 100 else 1.0)
+            except Exception:
+                elapsed_ms = 0.0
+            metrics_store.record(
+                "ocr.inference",
+                elapsed_ms,
+                {"result_count": len(result) if result else 0},
+            )
+
             if result:
                 self.finished.emit(result)
             else:
                 self.finished.emit([])
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class TranslateWorker(QThread):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, text: str, target_lang: str, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.target_lang = target_lang
+
+    def run(self):
+        try:
+            if not self.text.strip():
+                self.error.emit("没有可翻译内容")
+                return
+
+            params = {
+                "client": "gtx",
+                "sl": "auto",
+                "tl": self.target_lang,
+                "dt": "t",
+                "q": self.text,
+            }
+            url = (
+                "https://translate.googleapis.com/translate_a/single?"
+                + urllib.parse.urlencode(params)
+            )
+
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+
+            data = json.loads(payload)
+            translated_parts = []
+            if isinstance(data, list) and data and isinstance(data[0], list):
+                for item in data[0]:
+                    if isinstance(item, list) and item:
+                        translated_parts.append(str(item[0]))
+
+            translated = "".join(translated_parts).strip()
+            if not translated:
+                self.error.emit("翻译结果为空")
+                return
+
+            self.finished.emit(translated)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -288,6 +376,7 @@ class PinnedImageWindow(QWidget):
 
         self.drag_position = QPoint()
         self.ocr_worker = None
+        self.translate_worker = None
         self.toast_label = None
 
     def mousePressEvent(self, event):
@@ -347,6 +436,25 @@ class PinnedImageWindow(QWidget):
         ocr_action.triggered.connect(self.recognize_text)
         menu.addAction(ocr_action)
 
+        if self.image_label.ocr_lines:
+            menu.addSeparator()
+
+            copy_ocr_action = QAction("复制 OCR 全文", self)
+            copy_ocr_action.triggered.connect(self.copy_ocr_text)
+            menu.addAction(copy_ocr_action)
+
+            merge_line_action = QAction("复制 OCR (去换行)", self)
+            merge_line_action.triggered.connect(self.copy_ocr_single_line)
+            menu.addAction(merge_line_action)
+
+            translate_action = QAction("翻译 OCR 文本", self)
+            translate_action.triggered.connect(self.translate_ocr_text)
+            menu.addAction(translate_action)
+
+            export_csv_action = QAction("导出 OCR 表格 CSV", self)
+            export_csv_action.triggered.connect(self.export_ocr_csv)
+            menu.addAction(export_csv_action)
+
         shadow_action = QAction("隐藏阴影" if self.shadow_enabled else "显示阴影", self)
         shadow_action.triggered.connect(self.toggle_shadow)
         menu.addAction(shadow_action)
@@ -363,6 +471,161 @@ class PinnedImageWindow(QWidget):
 
     def copy_to_clipboard(self):
         QApplication.clipboard().setPixmap(self.original_pixmap)
+
+    def _sorted_ocr_lines(self):
+        return sorted(
+            self.image_label.ocr_lines, key=lambda l: (l["rect"][1], l["rect"][0])
+        )
+
+    def get_ocr_text(self, single_line=False):
+        lines = [str(line.get("text", "")).strip() for line in self._sorted_ocr_lines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            return ""
+        if single_line:
+            return " ".join(lines)
+        return "\n".join(lines)
+
+    def copy_ocr_text(self):
+        text = self.get_ocr_text(single_line=False)
+        if not text:
+            self.show_toast("暂无 OCR 结果")
+            return
+        QApplication.clipboard().setText(text)
+        self.show_toast("OCR 全文已复制")
+
+    def copy_ocr_single_line(self):
+        text = self.get_ocr_text(single_line=True)
+        if not text:
+            self.show_toast("暂无 OCR 结果")
+            return
+        QApplication.clipboard().setText(text)
+        self.show_toast("OCR 文本(去换行)已复制")
+
+    def _ocr_to_table_rows(self):
+        lines = self._sorted_ocr_lines()
+        if not lines:
+            return []
+
+        heights = [max(1, int(line["rect"][3])) for line in lines]
+        row_threshold = max(10, int(sum(heights) / len(heights) * 0.6))
+
+        rows = []
+        current = []
+        current_y = None
+        for line in lines:
+            x, y, w, h = line["rect"]
+            cy = int(y + h / 2)
+            if current_y is None or abs(cy - current_y) <= row_threshold:
+                current.append(line)
+                if current_y is None:
+                    current_y = cy
+                else:
+                    current_y = int((current_y + cy) / 2)
+            else:
+                rows.append(sorted(current, key=lambda item: item["rect"][0]))
+                current = [line]
+                current_y = cy
+        if current:
+            rows.append(sorted(current, key=lambda item: item["rect"][0]))
+
+        column_positions = []
+        tolerance = 22
+        for row in rows:
+            for cell in row:
+                x = int(cell["rect"][0])
+                matched = False
+                for idx, col_x in enumerate(column_positions):
+                    if abs(x - col_x) <= tolerance:
+                        column_positions[idx] = int((column_positions[idx] + x) / 2)
+                        matched = True
+                        break
+                if not matched:
+                    column_positions.append(x)
+        column_positions.sort()
+
+        table_rows = []
+        for row in rows:
+            values = [""] * max(1, len(column_positions))
+            for cell in row:
+                x = int(cell["rect"][0])
+                text = str(cell.get("text", "")).strip()
+                col_idx = 0
+                min_dist = None
+                for i, col_x in enumerate(column_positions):
+                    dist = abs(x - col_x)
+                    if min_dist is None or dist < min_dist:
+                        min_dist = dist
+                        col_idx = i
+                if values[col_idx]:
+                    values[col_idx] = values[col_idx] + " " + text
+                else:
+                    values[col_idx] = text
+            table_rows.append(values)
+
+        return table_rows
+
+    def export_ocr_csv(self):
+        rows = self._ocr_to_table_rows()
+        if not rows:
+            self.show_toast("暂无 OCR 表格可导出")
+            return
+
+        default_name = f"ocr-table-{int(time.time())}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 OCR CSV", default_name, "CSV Files (*.csv)"
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)
+            QApplication.clipboard().setText(path)
+            self.show_toast("CSV 导出成功，路径已复制")
+        except Exception as e:
+            logger.warning("Failed to export OCR CSV: %s", e)
+            self.show_toast("CSV 导出失败")
+
+    @staticmethod
+    def _guess_target_lang(text):
+        for ch in text:
+            if "\u4e00" <= ch <= "\u9fff":
+                return "en"
+        return "zh-CN"
+
+    def translate_ocr_text(self):
+        text = self.get_ocr_text(single_line=False)
+        if not text:
+            self.show_toast("暂无 OCR 文本可翻译")
+            return
+
+        if self.translate_worker and self.translate_worker.isRunning():
+            return
+
+        target_lang = self._guess_target_lang(text)
+        self.translate_worker = TranslateWorker(text, target_lang, self)
+        self.translate_worker.finished.connect(self.on_translate_finished)
+        self.translate_worker.error.connect(self.on_translate_error)
+        self.translate_worker.finished.connect(self._clear_translate_worker)
+        self.translate_worker.error.connect(self._clear_translate_worker)
+        self.translate_worker.start()
+        self.show_toast("正在翻译...")
+
+    def _clear_translate_worker(self, *args):
+        del args
+        if self.translate_worker:
+            self.translate_worker.deleteLater()
+            self.translate_worker = None
+
+    def on_translate_finished(self, text):
+        QApplication.clipboard().setText(text)
+        self.show_toast("翻译完成，结果已复制")
+
+    def on_translate_error(self, error):
+        logger.warning("OCR translation failed: %s", error)
+        self.show_toast("翻译失败")
 
     def show_toast(self, message, duration=3000):
         if self.toast_label:
@@ -397,9 +660,7 @@ class PinnedImageWindow(QWidget):
 
         def safe_delete():
             try:
-                import sip
-
-                if self.toast_label and not sip.isdeleted(self.toast_label):
+                if self.toast_label:
                     self.toast_label.deleteLater()
             except Exception:
                 pass
@@ -414,9 +675,9 @@ class PinnedImageWindow(QWidget):
 
         self.ocr_worker = OCRWorker(self.original_pixmap, self)
         self.ocr_worker.finished.connect(self.on_ocr_finished)
-        self.ocr_worker.error.connect(lambda e: print(f"OCR Error: {e}"))
+        self.ocr_worker.error.connect(lambda e: logger.warning("OCR Error: %s", e))
         self.ocr_worker.start()
 
     def on_ocr_finished(self, results):
         self.image_label.set_ocr_results(results)
-        # We no longer auto copy or notify on OCR completion
+        self.show_toast(f"OCR 完成，共 {len(results)} 条")

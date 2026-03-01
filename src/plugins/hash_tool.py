@@ -10,7 +10,21 @@ class HashPlugin(PluginBase):
         return "生成 MD5, SHA1, SHA256 哈希值"
 
     def get_keywords(self):
-        return ["h"]
+        return ["h", "hash"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "hash <text>",
+            "examples": ["hash hello", "h 123456"],
+            "params": [
+                {
+                    "name": "text",
+                    "label": "文本",
+                    "placeholder": "输入待计算哈希的内容",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()

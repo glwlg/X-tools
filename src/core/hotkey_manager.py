@@ -14,6 +14,10 @@ import ctypes
 import ctypes.wintypes
 import threading
 from PyQt6.QtCore import QObject, pyqtSignal
+from src.core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 # Windows constants
 MOD_ALT = 0x0001
@@ -119,14 +123,14 @@ class HotkeyManager(QObject):
 
         vk = VK_MAP.get(key_name)
         if vk is None:
-            print(f"[HotkeyManager] Unknown key: {key_name}")
+            logger.warning("[HotkeyManager] Unknown key: %s", key_name)
             return -1
 
         modifiers = MOD_NOREPEAT  # Always include NOREPEAT
         for mod in mod_names:
             mod_val = MOD_MAP.get(mod)
             if mod_val is None:
-                print(f"[HotkeyManager] Unknown modifier: {mod}")
+                logger.warning("[HotkeyManager] Unknown modifier: %s", mod)
                 return -1
             modifiers |= mod_val
 
@@ -152,22 +156,21 @@ class HotkeyManager(QObject):
         """
         user32 = ctypes.windll.user32
 
-        # Register all pending hotkeys
-        callbacks_copy = list(self._callbacks.values())
-        for _, modifiers, vk in callbacks_copy:
-            # We need the key as well actually
-            pass
-
         for hk_id, (callback, modifiers, vk) in list(self._callbacks.items()):
             result = user32.RegisterHotKey(None, hk_id, modifiers, vk)
             if result:
-                print(
-                    f"[HotkeyManager] Registered hotkey ID={hk_id} (mod=0x{modifiers:04x}, vk=0x{vk:02x})"
+                logger.info(
+                    "[HotkeyManager] Registered hotkey ID=%s (mod=0x%04x, vk=0x%02x)",
+                    hk_id,
+                    modifiers,
+                    vk,
                 )
             else:
                 error = ctypes.GetLastError()
-                print(
-                    f"[HotkeyManager] Failed to register hotkey ID={hk_id}, error={error}"
+                logger.warning(
+                    "[HotkeyManager] Failed to register hotkey ID=%s, error=%s",
+                    hk_id,
+                    error,
                 )
 
         # Message loop
@@ -185,13 +188,15 @@ class HotkeyManager(QObject):
                     try:
                         callback()
                     except Exception as e:
-                        print(f"[HotkeyManager] Error in hotkey callback: {e}")
+                        logger.exception(
+                            "[HotkeyManager] Error in hotkey callback: %s", e
+                        )
 
         # Cleanup: unregister all hotkeys
         for hk_id in self._callbacks:
             user32.UnregisterHotKey(None, hk_id)
 
-        print("[HotkeyManager] Listener stopped.")
+        logger.info("[HotkeyManager] Listener stopped.")
 
     def stop(self):
         """Stop the hotkey listener."""

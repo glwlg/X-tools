@@ -10,7 +10,21 @@ class Base64Plugin(PluginBase):
         return "对文本进行 Base64 编码或解码"
 
     def get_keywords(self):
-        return ["b"]
+        return ["b", "base64", "b64"]
+
+    def get_command_schema(self):
+        return {
+            "usage": "base64 <text>",
+            "examples": ["base64 hello world", "b64 5L2g5aW9"],
+            "params": [
+                {
+                    "name": "text",
+                    "label": "文本",
+                    "placeholder": "输入待编码或解码内容",
+                    "required": True,
+                }
+            ],
+        }
 
     def execute(self, query):
         query = query.strip()
