@@ -498,8 +498,17 @@ Expected: If mismatch, record exact failure step and return to corresponding tas
 Run: `uv run python -m unittest tests.core.test_workflow_schema tests.core.test_config_workflows tests.plugins.test_workflow_plugin_chain tests.ui.test_workflow_steps_codec -v`
 Expected: PASS
 
-Run: `uv run main.py`
-Expected: App starts, macro management and execution path works manually.
+Run (headless smoke): `uv run python -c "from src.core.config import config_manager; from src.plugins.workflow_tool import WorkflowPlugin; w=WorkflowPlugin(); config_manager.set_workflows([{'id':'clip-url-md5','name':'clip-url-md5','description':'smoke','steps':[{'command':'url {clipboard}','pick':'编码结果'},{'command':'hash {prev}','pick':'MD5'}]}]); print('LIST_OK' if any(i.get('path')=='clip-url-md5' for i in w.execute('')) else 'LIST_FAIL')"`
+Expected: output contains `LIST_OK`
+
+Manual acceptance checklist:
+1) Open Settings -> `宏` page exists.
+2) Create workflow `clip-url-md5` with two steps:
+   - `url {clipboard} | 编码结果`
+   - `hash {prev} | MD5`
+3) In search box run `wf clip-url-md5` and execute result.
+4) Clipboard value equals expected chained output.
+5) Delete workflow and verify `wf clip-url-md5` no longer appears.
 
 **Step 5: Commit**
 

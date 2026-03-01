@@ -1,33 +1,17 @@
 from PyQt6.QtWidgets import QApplication
 
+from src.core.config import config_manager
 from src.core.plugin_base import PluginBase
 from src.core.plugin_manager import plugin_manager
+from src.core.workflow_schema import normalize_workflows
+
+
+ALLOWED_TEMPLATE_VARS = ("clipboard", "prev", "input")
 
 
 class WorkflowPlugin(PluginBase):
     def __init__(self):
-        self._workflows = [
-            {
-                "id": "clip-md5",
-                "name": "剪贴板文本 -> MD5",
-                "description": "读取剪贴板文本并复制其 MD5 值",
-            },
-            {
-                "id": "clip-url-encode",
-                "name": "剪贴板文本 -> URL 编码",
-                "description": "读取剪贴板文本并复制 URL 编码结果",
-            },
-            {
-                "id": "clip-base64-encode",
-                "name": "剪贴板文本 -> Base64 编码",
-                "description": "读取剪贴板文本并复制 Base64 编码结果",
-            },
-            {
-                "id": "now-timestamp",
-                "name": "当前时间 -> 时间戳",
-                "description": "生成当前 Unix 时间戳并复制到剪贴板",
-            },
-        ]
+        pass
 
     def get_name(self):
         return "工作流宏"
@@ -56,32 +40,57 @@ class WorkflowPlugin(PluginBase):
         return True
 
     def execute(self, query):
-        text = query.strip().lower()
-        if text in self.get_keywords():
+        workflows = normalize_workflows(config_manager.get_workflows())
+
+        text = str(query).strip()
+        lowered = text.lower()
+        if lowered in self.get_keywords():
             text = ""
-        if text.startswith("run "):
+        else:
+            for keyword in self.get_keywords():
+                prefix = f"{keyword} "
+                if lowered.startswith(prefix):
+                    text = text[len(prefix) :].strip()
+                    lowered = text.lower()
+                    break
+
+        if lowered.startswith("run "):
             text = text[4:].strip()
 
         matched = []
         if not text:
-            matched = self._workflows
+            for wf in workflows:
+                matched.append((wf, str(wf.get("id", ""))))
         else:
-            for wf in self._workflows:
+            needle = text.lower()
+            first, _, rest = text.partition(" ")
+            first_lower = first.strip().lower()
+            input_suffix = rest.strip()
+            for wf in workflows:
+                workflow_id = str(wf.get("id", "")).strip()
+                workflow_id_lower = workflow_id.lower()
+                if first_lower and first_lower == workflow_id_lower:
+                    action_path = workflow_id
+                    if input_suffix:
+                        action_path = f"{workflow_id} {input_suffix}"
+                    matched.append((wf, action_path))
+                    continue
+
                 if (
-                    text in wf["id"]
-                    or text in wf["name"].lower()
-                    or text in wf["description"].lower()
+                    needle in workflow_id_lower
+                    or needle in str(wf.get("name", "")).lower()
+                    or needle in str(wf.get("description", "")).lower()
                 ):
-                    matched.append(wf)
+                    matched.append((wf, workflow_id))
 
         return [
             {
                 "name": f"执行工作流: {wf['name']} ({wf['id']})",
-                "path": wf["id"],
+                "path": action_path,
                 "type": "workflow_run",
                 "workflow_desc": wf["description"],
             }
-            for wf in matched
+            for wf, action_path in matched
         ]
 
     @staticmethod
@@ -100,106 +109,115 @@ class WorkflowPlugin(PluginBase):
         return True
 
     @staticmethod
-    def _require_plugin(keyword):
-        plugin = plugin_manager.get_plugin_by_keyword(keyword)
-        if plugin is None:
-            raise RuntimeError(f"未找到插件: {keyword}")
-        return plugin
+    def _render_template(template, context):
+        rendered = str(template)
+        for key in ALLOWED_TEMPLATE_VARS:
+            rendered = rendered.replace("{" + key + "}", str(context.get(key, "")))
+        return rendered.strip()
+
+    @staticmethod
+    def _parse_command(command):
+        parts = str(command).strip().split(None, 1)
+        if not parts:
+            return "", ""
+        if len(parts) == 1:
+            return parts[0], ""
+        return parts[0], parts[1]
+
+    @staticmethod
+    def _find_plugin_for_keyword(keyword):
+        word = str(keyword).strip().lower()
+        if not word:
+            return None
+
+        for plugin in plugin_manager.get_plugins(enabled_only=True):
+            keywords = [str(item).strip().lower() for item in plugin.get_keywords()]
+            if word in keywords:
+                return plugin
+        return None
 
     @staticmethod
     def _pick_result(results, prefix=""):
         if not isinstance(results, list):
             return None
 
-        if prefix:
-            for item in results:
+        candidates = [item for item in results if isinstance(item, dict)]
+        if not candidates:
+            return None
+
+        pick = str(prefix).strip().lower()
+        if pick:
+            for item in candidates:
                 name = str(item.get("name", "")).lower()
-                if name.startswith(prefix.lower()):
+                if name.startswith(pick):
                     return item
 
-        return results[0] if results else None
+        return candidates[0]
 
-    def _run_clip_md5(self):
-        text = self._clipboard_text()
-        if not text:
-            return False, "剪贴板没有可用文本"
-
-        plugin = self._require_plugin("hash")
-        results = plugin.execute(text)
-        item = self._pick_result(results, prefix="md5")
-        if not item:
-            return False, "Hash 工作流执行失败"
-
-        ok = self._copy_text(item.get("path", ""))
-        if not ok:
-            return False, "无法写入剪贴板"
-
-        return True, "工作流完成：已复制 MD5"
-
-    def _run_clip_url_encode(self):
-        text = self._clipboard_text()
-        if not text:
-            return False, "剪贴板没有可用文本"
-
-        plugin = self._require_plugin("url")
-        results = plugin.execute(text)
-        item = self._pick_result(results, prefix="编码结果")
-        if not item:
-            return False, "URL 编码工作流执行失败"
-
-        ok = self._copy_text(item.get("path", ""))
-        if not ok:
-            return False, "无法写入剪贴板"
-
-        return True, "工作流完成：已复制 URL 编码结果"
-
-    def _run_clip_base64_encode(self):
-        text = self._clipboard_text()
-        if not text:
-            return False, "剪贴板没有可用文本"
-
-        plugin = self._require_plugin("base64")
-        results = plugin.execute(text)
-        item = self._pick_result(results, prefix="编码结果")
-        if not item:
-            return False, "Base64 工作流执行失败"
-
-        ok = self._copy_text(item.get("path", ""))
-        if not ok:
-            return False, "无法写入剪贴板"
-
-        return True, "工作流完成：已复制 Base64 编码结果"
-
-    def _run_now_timestamp(self):
-        plugin = self._require_plugin("timestamp")
-        results = plugin.execute("now")
-        item = self._pick_result(results, prefix="当前时间戳")
-        if not item:
-            return False, "时间戳工作流执行失败"
-
-        ok = self._copy_text(item.get("path", ""))
-        if not ok:
-            return False, "无法写入剪贴板"
-
-        return True, "工作流完成：已复制当前时间戳"
+    @staticmethod
+    def _get_workflows():
+        return normalize_workflows(config_manager.get_workflows())
 
     def handle_action(self, workflow_id):
-        key = str(workflow_id).strip().lower()
-        runners = {
-            "clip-md5": self._run_clip_md5,
-            "clip-url-encode": self._run_clip_url_encode,
-            "clip-base64-encode": self._run_clip_base64_encode,
-            "now-timestamp": self._run_now_timestamp,
-        }
-
-        runner = runners.get(key)
-        if runner is None:
+        action_text = str(workflow_id).strip()
+        if not action_text:
             return "未找到对应工作流"
 
-        ok, msg = runner()
-        if ok:
-            return msg
-        return f"工作流失败: {msg}"
+        action_parts = action_text.split(None, 1)
+        key = action_parts[0].strip().lower()
+        input_text = action_parts[1].strip() if len(action_parts) > 1 else ""
+
+        workflow = None
+        for item in self._get_workflows():
+            if str(item.get("id", "")).strip().lower() == key:
+                workflow = item
+                break
+
+        if workflow is None:
+            return "未找到对应工作流"
+
+        context = {
+            "clipboard": self._clipboard_text(),
+            "prev": "",
+            "input": input_text,
+        }
+
+        steps = workflow.get("steps", [])
+        for index, step in enumerate(steps, start=1):
+            rendered = self._render_template(step.get("command", ""), context)
+            keyword, args = self._parse_command(rendered)
+
+            if not keyword:
+                return f"工作流失败: 第{index}步命令为空"
+
+            plugin = self._find_plugin_for_keyword(keyword)
+            if plugin is None:
+                return f"工作流失败: 第{index}步未找到插件 ({keyword})"
+
+            try:
+                results = plugin.execute(args)
+            except Exception as exc:
+                return f"工作流失败: 第{index}步执行异常 ({keyword}): {exc}"
+
+            pick_prefix = self._render_template(step.get("pick", ""), context)
+            chosen = self._pick_result(results, pick_prefix)
+            if not chosen:
+                return f"工作流失败: 第{index}步未匹配到结果"
+            if not isinstance(chosen, dict):
+                return f"工作流失败: 第{index}步结果格式无效"
+
+            output = str(chosen.get("path", "")).strip()
+            if not output:
+                return f"工作流失败: 第{index}步结果为空"
+            context["prev"] = output
+
+        if not context["prev"]:
+            return "工作流失败: 没有可复制结果"
+        if not self._copy_text(context["prev"]):
+            return "工作流失败: 无法写入剪贴板"
+
+        workflow_name = str(workflow.get("name") or workflow.get("id") or "")
+        return f"工作流完成：{workflow_name}（共 {len(steps)} 步）"
 
     def on_enter(self):
         pass

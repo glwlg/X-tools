@@ -1,8 +1,10 @@
 import json
+import copy
 import winreg
 import sys
 import os
 from src.core.logger import get_logger
+from src.core.workflow_schema import DEFAULT_WORKFLOWS, normalize_workflows
 
 
 logger = get_logger(__name__)
@@ -30,7 +32,13 @@ DEFAULT_CONFIG = {
         os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
     ),
     "screenshot_filename_template": "x-tools_{date}_{time}",
+    "workflows": copy.deepcopy(DEFAULT_WORKFLOWS),
 }
+
+
+def _deepcopy_default_config():
+    return copy.deepcopy(DEFAULT_CONFIG)
+
 
 THEME_FILE = os.path.join(CONFIG_DIR, "themes.json")
 DEFAULT_THEMES = {
@@ -69,16 +77,16 @@ class ConfigManager:
     def load_config(self):
         if not os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "w") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=4)
-            return DEFAULT_CONFIG.copy()
+                json.dump(_deepcopy_default_config(), f, indent=4)
+            return _deepcopy_default_config()
 
         try:
             with open(CONFIG_FILE, "r") as f:
                 loaded = json.load(f)
                 if not isinstance(loaded, dict):
-                    return DEFAULT_CONFIG.copy()
+                    return _deepcopy_default_config()
 
-                merged = DEFAULT_CONFIG.copy()
+                merged = _deepcopy_default_config()
                 merged.update(loaded)
 
                 if not isinstance(merged.get("hotkeys"), dict):
@@ -87,9 +95,11 @@ class ConfigManager:
                 if not isinstance(merged.get("plugins_enabled"), dict):
                     merged["plugins_enabled"] = {}
 
+                merged["workflows"] = normalize_workflows(merged.get("workflows"))
+
                 return merged
         except:
-            return DEFAULT_CONFIG.copy()
+            return _deepcopy_default_config()
 
     def save_config(self):
         try:
@@ -152,6 +162,13 @@ class ConfigManager:
 
     def set_value(self, key: str, value):
         self.config[key] = value
+        self.save_config()
+
+    def get_workflows(self):
+        return normalize_workflows(self.config.get("workflows"))
+
+    def set_workflows(self, workflows):
+        self.config["workflows"] = normalize_workflows(workflows)
         self.save_config()
 
     def set_startup(self, enable=True):

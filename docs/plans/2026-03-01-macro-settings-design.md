@@ -47,7 +47,12 @@
 
 ```json
 {
-  "workflows": []
+  "workflows": [
+    { "id": "clip-md5", "name": "...", "steps": [ ... ] },
+    { "id": "clip-url-encode", "name": "...", "steps": [ ... ] },
+    { "id": "clip-base64-encode", "name": "...", "steps": [ ... ] },
+    { "id": "now-timestamp", "name": "...", "steps": [ ... ] }
+  ]
 }
 ```
 
@@ -82,7 +87,7 @@
 
 1. `{clipboard}`：当前剪贴板文本。
 2. `{prev}`：上一步选中结果的 `path`。
-3. `{input}`：预留运行输入变量（先保留替换能力，后续可扩展入口参数）。
+3. `{input}`：运行输入变量，可通过 `wf <workflow-id> <input>` 传入。
 
 解析流程：
 
@@ -115,20 +120,21 @@ steps 输入格式：
 
 ## 7. 执行流程设计
 
-入口：`WorkflowPlugin.handle_action(workflow_id)`。
+入口：`WorkflowPlugin.handle_action(workflow_id_or_with_input)`。
 
 流程：
 
-1. 根据 `workflow_id` 查找宏定义。
-2. 初始化执行上下文：`clipboard`、`prev`（空）、`input`（空）。
-3. 逐步执行 `steps`：
+1. 解析执行参数，拆分 `workflow_id` 与可选 `input` 文本。
+2. 根据 `workflow_id` 查找宏定义。
+3. 初始化执行上下文：`clipboard`、`prev`（空）、`input`（来自执行参数）。
+4. 逐步执行 `steps`：
    1. 变量替换。
    2. 解析命令并定位插件。
    3. 调用插件 `execute()`。
    4. 根据 `pick`/默认规则选中结果。
    5. 将选中结果 `path` 写入 `prev`。
-4. 全部成功后复制最终 `prev` 到剪贴板。
-5. 返回成功提示：`工作流完成：<name>（共 N 步）`。
+5. 全部成功后复制最终 `prev` 到剪贴板。
+6. 返回成功提示：`工作流完成：<name>（共 N 步）`。
 
 ## 8. 错误处理策略
 
@@ -149,7 +155,7 @@ steps 输入格式：
 
 ## 9. 兼容性与迁移
 
-1. 保留当前内置 4 个预设宏作为默认数据源。
+1. 保留内置 4 个预设宏作为默认数据源（并直接写入 `DEFAULT_CONFIG.workflows`）。
 2. 若配置中不存在 `workflows` 或数据非法，回退到默认预设并在保存时修复。
 3. 搜索窗口 `workflow_run` 渲染与行为保持不变，避免额外改动。
 
