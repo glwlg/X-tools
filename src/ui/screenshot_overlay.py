@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, pyqtSignal, QSize
 from PyQt6.QtGui import (
     QPainter,
     QColor,
@@ -7,6 +7,9 @@ from PyQt6.QtGui import (
     QPainterPathStroker,
     QIcon,
     QPixmap,
+    QFont,
+    QFontMetrics,
+    QKeySequence,
 )
 from PyQt6.QtWidgets import (
     QWidget,
@@ -17,6 +20,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QButtonGroup,
+    QFileDialog,
+    QMessageBox,
 )
 from datetime import datetime
 import time
@@ -76,6 +81,12 @@ class ScreenshotOverlay(QWidget):
         self.draw_actions = []
         self.current_action = None
         self.mosaic_pixmap = None
+        self.is_moving_action = False
+        self.moving_action_index = None
+        self.action_drag_last_pos = QPoint()
+        self.action_drag_changed = False
+        self.editing_text_index = None
+        self.editing_text_snapshot = None
 
         self.text_input = QLineEdit(self)
         self.text_input.hide()
@@ -84,8 +95,8 @@ class ScreenshotOverlay(QWidget):
         )
         self.text_input.returnPressed.connect(self.commit_text_action)
 
-        # For undo mechanism
-        self.redo_actions = []
+        self.undo_states = []
+        self.redo_states = []
 
         self.init_toolbar()
 
@@ -96,7 +107,18 @@ class ScreenshotOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(Qt.GlobalColor.white, 2))
 
-        if mode == "rect":
+        if mode == "move":
+            painter.drawLine(12, 2, 12, 22)
+            painter.drawLine(2, 12, 22, 12)
+            painter.drawLine(12, 2, 9, 5)
+            painter.drawLine(12, 2, 15, 5)
+            painter.drawLine(12, 22, 9, 19)
+            painter.drawLine(12, 22, 15, 19)
+            painter.drawLine(2, 12, 5, 9)
+            painter.drawLine(2, 12, 5, 15)
+            painter.drawLine(22, 12, 19, 9)
+            painter.drawLine(22, 12, 19, 15)
+        elif mode == "rect":
             painter.drawRoundedRect(3, 3, 18, 18, 2, 2)
         elif mode == "line":
             painter.drawLine(4, 20, 20, 4)
@@ -160,6 +182,12 @@ class ScreenshotOverlay(QWidget):
         elif mode == "close":
             painter.drawLine(6, 6, 18, 18)
             painter.drawLine(6, 18, 18, 6)
+        elif mode == "save":
+            painter.drawRoundedRect(4, 4, 16, 16, 2, 2)
+            painter.drawLine(8, 4, 8, 10)
+            painter.drawLine(16, 4, 16, 10)
+            painter.drawLine(8, 10, 16, 10)
+            painter.drawRect(8, 13, 8, 5)
 
         painter.end()
         return QIcon(pixmap)
@@ -295,6 +323,12 @@ class ScreenshotOverlay(QWidget):
         btn_qr.setToolTip("扫码 (Q)")
         btn_qr.clicked.connect(self.on_qr_clicked)
 
+        btn_save = QPushButton()
+        btn_save.setIcon(self.create_icon("save"))
+        btn_save.setIconSize(QSize(18, 18))
+        btn_save.setToolTip("保存到... (Ctrl+S)")
+        btn_save.clicked.connect(self.on_save_clicked)
+
         btn_cancel = QPushButton()
         btn_cancel.setIcon(self.create_icon("close"))
         btn_cancel.setIconSize(QSize(18, 18))
@@ -303,6 +337,7 @@ class ScreenshotOverlay(QWidget):
 
         tools_layout.addWidget(btn_pin)
         tools_layout.addWidget(btn_qr)
+        tools_layout.addWidget(btn_save)
         tools_layout.addWidget(btn_cancel)
         tools_layout.addWidget(btn_copy)
 
@@ -314,9 +349,13 @@ class ScreenshotOverlay(QWidget):
         self.text_input.setStyleSheet(
             f"background: transparent; border: none; font-size: 18px; color: {color_hex}; outline: none; margin: 0; padding: 0;"
         )
+        if self.text_input.isVisible():
+            self.update_text_input_style()
 
     def set_draw_thickness(self, val):
         self.draw_thickness = val
+        if self.text_input.isVisible():
+            self.update_text_input_style()
 
     def handle_tool_click(self, btn, mode):
         # Enforce exclusivity manually to allow unchecking
@@ -338,14 +377,126 @@ class ScreenshotOverlay(QWidget):
         self.toolbar_widget.adjustSize()
 
     def undo_action(self):
-        if self.draw_actions:
-            self.redo_actions.append(self.draw_actions.pop())
+        if self.text_input.isVisible():
+            self.commit_text_action()
+        if self.undo_states:
+            self.redo_states.append(self._clone_draw_actions())
+            self.draw_actions = self.undo_states.pop()
             self.update()
 
     def redo_action(self):
-        if self.redo_actions:
-            self.draw_actions.append(self.redo_actions.pop())
+        if self.text_input.isVisible():
+            self.commit_text_action()
+        if self.redo_states:
+            self.undo_states.append(self._clone_draw_actions())
+            self.draw_actions = self.redo_states.pop()
             self.update()
+
+    @staticmethod
+    def _clone_action(action):
+        cloned = {}
+        for key, value in action.items():
+            if key == "points":
+                cloned[key] = [QPoint(point) for point in value]
+            elif key == "pos":
+                cloned[key] = QPoint(value)
+            elif key == "color":
+                cloned[key] = QColor(value)
+            else:
+                cloned[key] = value
+        return cloned
+
+    def _clone_draw_actions(self):
+        return [self._clone_action(action) for action in self.draw_actions]
+
+    def _record_undo_state(self, snapshot=None):
+        if snapshot is None:
+            snapshot = self._clone_draw_actions()
+        self.undo_states.append(snapshot)
+        self.redo_states.clear()
+
+    @staticmethod
+    def _is_movable_action_type(action_type):
+        return action_type in {"text", "rect", "line", "arrow"}
+
+    @staticmethod
+    def _normalize_output_path(output_path: str) -> str:
+        root, ext = os.path.splitext(output_path)
+        if ext.lower() != ".png":
+            return root + ".png"
+        return output_path
+
+    @staticmethod
+    def _translate_action(action, delta: QPoint):
+        if delta.isNull():
+            return
+        if action.get("type") == "text":
+            action["pos"] = action["pos"] + delta
+        elif "points" in action:
+            action["points"] = [point + delta for point in action["points"]]
+
+    def _get_text_action_rect(self, action) -> QRect:
+        font = QFont(self.text_input.font())
+        font.setPixelSize(action.get("font_size", 18))
+        fm = QFontMetrics(font)
+        text = action.get("text", "")
+        width = max(12, fm.horizontalAdvance(text) + 6)
+        height = max(12, fm.height() + 4)
+        return QRect(action["pos"], QSize(width, height))
+
+    def _action_contains_point(self, action, pos: QPoint) -> bool:
+        action_type = action.get("type")
+        if action_type == "text":
+            return self._get_text_action_rect(action).adjusted(-4, -4, 4, 4).contains(
+                pos
+            )
+
+        points = action.get("points", [])
+        if action_type == "rect" and len(points) == 2:
+            rect = QRect(points[0], points[1]).normalized()
+            padding = max(8, int(action.get("thickness", 2)) + 6)
+            return rect.adjusted(-padding, -padding, padding, padding).contains(pos)
+
+        if action_type in {"line", "arrow"} and len(points) == 2:
+            path = QPainterPath()
+            path.moveTo(float(points[0].x()), float(points[0].y()))
+            path.lineTo(float(points[1].x()), float(points[1].y()))
+            stroker = QPainterPathStroker()
+            stroker.setWidth(max(10.0, float(action.get("thickness", 2)) + 6.0))
+            return stroker.createStroke(path).contains(QPointF(pos))
+
+        return False
+
+    def _find_movable_action_index(self, pos: QPoint):
+        for index in range(len(self.draw_actions) - 1, -1, -1):
+            action = self.draw_actions[index]
+            if self._is_movable_action_type(action.get("type")) and self._action_contains_point(
+                action, pos
+            ):
+                return index
+        return None
+
+    def _find_text_action_index(self, pos: QPoint):
+        for index in range(len(self.draw_actions) - 1, -1, -1):
+            action = self.draw_actions[index]
+            if action.get("type") == "text" and self._action_contains_point(action, pos):
+                return index
+        return None
+
+    def _get_screenshot_save_dir(self):
+        save_dir = str(
+            config_manager.get_value(
+                "screenshot_save_dir",
+                os.path.join(
+                    os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
+                ),
+            )
+        ).strip()
+        if not save_dir:
+            save_dir = os.path.join(
+                os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
+            )
+        return save_dir
 
     def update_text_input_style(self):
         font_size = max(12, 12 + self.draw_thickness * 2)
@@ -361,20 +512,75 @@ class ScreenshotOverlay(QWidget):
     def commit_text_action(self):
         if self.text_input.isVisible():
             txt = self.text_input.text()
+            should_record = txt.strip() or self.editing_text_snapshot is not None
+            if should_record:
+                self._record_undo_state(self.editing_text_snapshot)
             if txt.strip():
-                self.draw_actions.append(
-                    {
-                        "type": "text",
-                        "color": self.draw_color,
-                        "text": txt,
-                        "pos": self.text_input.pos(),
-                        "font_size": max(12, 12 + self.draw_thickness * 2),
-                    }
-                )
-                self.redo_actions.clear()
+                action = {
+                    "type": "text",
+                    "color": self.draw_color,
+                    "text": txt,
+                    "pos": self.text_input.pos(),
+                    "font_size": max(12, 12 + self.draw_thickness * 2),
+                }
+                if self.editing_text_index is None:
+                    self.draw_actions.append(action)
+                else:
+                    insert_at = min(self.editing_text_index, len(self.draw_actions))
+                    self.draw_actions.insert(insert_at, action)
+            self.editing_text_index = None
+            self.editing_text_snapshot = None
             self.text_input.clear()
             self.text_input.hide()
             self.update()
+
+    def _prompt_manual_save_path(self):
+        suggested_path = os.path.join(
+            self._get_screenshot_save_dir(), self._build_screenshot_filename()
+        )
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存截图到",
+            suggested_path,
+            "PNG 图片 (*.png)",
+        )
+        if not output_path:
+            return None
+        return self._normalize_output_path(output_path)
+
+    def _save_pixmap_to_path(self, pixmap, output_path, source="manual"):
+        output_path = self._normalize_output_path(output_path)
+        started = time.perf_counter()
+        ok = False
+        try:
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            ok = pixmap.save(output_path, "PNG")
+        except Exception as e:
+            logger.warning("Failed to save screenshot to %s: %s", output_path, e)
+
+        elapsed = (time.perf_counter() - started) * 1000
+        metrics_store.record(
+            "screenshot.save",
+            elapsed,
+            {"ok": bool(ok), "path": output_path, "source": source},
+        )
+
+        if ok:
+            logger.info("Screenshot saved (%s): %s", source, output_path)
+            return output_path
+
+        logger.warning("Failed to save screenshot (%s): %s", source, output_path)
+        return None
+
+    def save_selection_as(self):
+        output_path = self._prompt_manual_save_path()
+        if output_path:
+            self.finalize_capture(manual_save_path=output_path)
+
+    def on_save_clicked(self):
+        self.save_selection_as()
 
     def show_toolbar(self):
         self.toolbar_widget.adjustSize()
@@ -440,14 +646,22 @@ class ScreenshotOverlay(QWidget):
         self.resize_anchor = None
         self.selection_rect = QRect()
         self.draw_actions.clear()
-        self.redo_actions.clear()
+        self.undo_states.clear()
+        self.redo_states.clear()
         self.current_action = None
         self.draw_mode = None
+        self.is_moving_action = False
+        self.moving_action_index = None
+        self.action_drag_last_pos = QPoint()
+        self.action_drag_changed = False
+        self.editing_text_index = None
+        self.editing_text_snapshot = None
         if self.tool_group:
             for b in self.tool_group.buttons():
                 b.setChecked(False)
         self.sub_toolbar.hide()
 
+        self.text_input.clear()
         self.text_input.hide()
         self.toolbar_widget.hide()
 
@@ -816,7 +1030,7 @@ class ScreenshotOverlay(QWidget):
         return None
 
     def update_cursor(self, pos):
-        if not self.is_drawing and not self.is_resizing:
+        if not self.is_drawing and not self.is_resizing and not self.is_moving_action:
             anchor = self.get_anchor(pos)
             if anchor in ["tl", "br"]:
                 self.setCursor(Qt.CursorShape.SizeFDiagCursor)
@@ -826,11 +1040,26 @@ class ScreenshotOverlay(QWidget):
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
             elif anchor in ["t", "b"]:
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif (
+                self.selection_rect.contains(pos)
+                and self.draw_mode != "text"
+                and self._find_movable_action_index(pos) is not None
+            ):
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif (
+                self.draw_mode == "text"
+                and self.selection_rect.contains(pos)
+                and self._find_text_action_index(pos) is not None
+            ):
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif self.draw_mode == "text" and self.selection_rect.contains(pos):
+                self.setCursor(Qt.CursorShape.IBeamCursor)
             else:
                 self.setCursor(Qt.CursorShape.CrossCursor)
 
     def wheelEvent(self, event):
-        if not self.selection_rect.isNull() and self.draw_mode:
+        adjustable_modes = {"rect", "line", "arrow", "pen", "text", "mosaic", "eraser"}
+        if not self.selection_rect.isNull() and self.draw_mode in adjustable_modes:
             delta = event.angleDelta().y()
             if delta > 0:
                 self.draw_thickness = min(50, self.draw_thickness + 2)
@@ -846,56 +1075,48 @@ class ScreenshotOverlay(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
 
-            # Handle Drawing
-            if (
-                self.draw_mode
-                and not self.selection_rect.isNull()
-                and self.selection_rect.contains(pos)
-            ):
+            if not self.selection_rect.isNull() and self.selection_rect.contains(pos):
                 if self.draw_mode == "text":
-                    # Check if clicking on an existing text to edit it
-                    clicked_existing = False
-                    for i, act in enumerate(self.draw_actions):
-                        if act["type"] == "text":
-                            # Extremely basic hit test
-                            act_pos = act["pos"]
-                            # roughly estimate bounding box based on length and font size
-                            font_size = act.get("font_size", 18)
-                            est_width = len(act["text"]) * font_size
-                            est_height = font_size + 10
-                            if (
-                                act_pos.x() <= pos.x() <= act_pos.x() + est_width
-                                and act_pos.y() <= pos.y() <= act_pos.y() + est_height
-                            ):
-                                # Re-open this text
-                                self.text_input.move(act_pos)
-                                self.text_input.setText(act["text"])
-                                self.text_input.show()
-                                self.text_input.setFocus()
-                                # Remove from actions
-                                self.draw_actions.pop(i)
-                                clicked_existing = True
-                                break
-
-                    if not clicked_existing:
-                        # Commit any existing text before starting new
+                    text_index = self._find_text_action_index(pos)
+                    if text_index is not None:
                         if self.text_input.isVisible():
-                            # Only abort moving to a new spot if we're clicking inside the current box
-                            # But wait, QLineEdit consumes its own clicks. So if we get a mouse press here,
-                            # it means we clicked outside the line edit. We should commit and then start new.
+                            self.commit_text_action()
+                        self.is_moving_action = True
+                        self.moving_action_index = text_index
+                        self.action_drag_last_pos = pos
+                        self.action_drag_changed = False
+                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    else:
+                        if self.text_input.isVisible():
                             self.commit_text_action()
                         self.text_input.move(pos)
                         self.text_input.setText("")
+                        self.editing_text_index = None
+                        self.editing_text_snapshot = None
+                        self.update_text_input_style()
                         self.text_input.show()
                         self.text_input.setFocus()
                     return
-                self.current_action = {
-                    "type": self.draw_mode,
-                    "color": self.draw_color,
-                    "points": [pos],
-                    "thickness": self.draw_thickness,
-                }
-                return
+
+                action_index = self._find_movable_action_index(pos)
+                if action_index is not None:
+                    if self.text_input.isVisible():
+                        self.commit_text_action()
+                    self.is_moving_action = True
+                    self.moving_action_index = action_index
+                    self.action_drag_last_pos = pos
+                    self.action_drag_changed = False
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    return
+
+                if self.draw_mode:
+                    self.current_action = {
+                        "type": self.draw_mode,
+                        "color": self.draw_color,
+                        "points": [pos],
+                        "thickness": self.draw_thickness,
+                    }
+                    return
 
             anchor = self.get_anchor(pos)
             if anchor and not self.selection_rect.isNull():
@@ -923,6 +1144,40 @@ class ScreenshotOverlay(QWidget):
                 # Close overlay
                 self.close_overlay()
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mouseDoubleClickEvent(event)
+
+        pos = event.position().toPoint()
+        if (
+            self.draw_mode == "text"
+            and not self.selection_rect.isNull()
+            and self.selection_rect.contains(pos)
+        ):
+            text_index = self._find_text_action_index(pos)
+            if text_index is not None:
+                if self.text_input.isVisible():
+                    self.commit_text_action()
+                action = self.draw_actions[text_index]
+                self.editing_text_snapshot = self._clone_draw_actions()
+                self.editing_text_index = text_index
+                self.text_input.move(action["pos"])
+                self.text_input.setText(action["text"])
+                self.draw_color = QColor(action["color"])
+                self.draw_thickness = max(2, (action.get("font_size", 18) - 12) // 2)
+                self.update_text_input_style()
+                self.text_input.show()
+                self.text_input.setFocus()
+                self.draw_actions.pop(text_index)
+                self.is_moving_action = False
+                self.moving_action_index = None
+                self.action_drag_last_pos = QPoint()
+                self.action_drag_changed = False
+                self.update()
+                return
+
+        super().mouseDoubleClickEvent(event)
+
     def mouseMoveEvent(self, event):
         pos = event.position().toPoint()
         self.current_mouse_pos = pos
@@ -935,6 +1190,14 @@ class ScreenshotOverlay(QWidget):
                     self.current_action["points"].append(pos)
             elif self.current_action["type"] in ["pen", "mosaic", "eraser"]:
                 self.current_action["points"].append(pos)
+        elif self.is_moving_action and self.moving_action_index is not None:
+            delta = pos - self.action_drag_last_pos
+            if not delta.isNull():
+                if not self.action_drag_changed:
+                    self._record_undo_state()
+                    self.action_drag_changed = True
+                self._translate_action(self.draw_actions[self.moving_action_index], delta)
+                self.action_drag_last_pos = pos
         elif self.is_drawing:
             self.end_pos = pos
             self.selection_rect = QRect(self.start_pos, self.end_pos).normalized()
@@ -966,9 +1229,18 @@ class ScreenshotOverlay(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             if self.current_action:
+                self._record_undo_state()
                 self.draw_actions.append(self.current_action)
-                self.redo_actions.clear()
                 self.current_action = None
+                self.update()
+                return
+
+            if self.is_moving_action:
+                self.is_moving_action = False
+                self.moving_action_index = None
+                self.action_drag_last_pos = QPoint()
+                self.action_drag_changed = False
+                self.update_cursor(event.position().toPoint())
                 self.update()
                 return
 
@@ -1005,6 +1277,11 @@ class ScreenshotOverlay(QWidget):
         ):
             self.redo_action()
         elif (
+            event.matches(QKeySequence.StandardKey.Save)
+            and not self.selection_rect.isNull()
+        ):
+            self.save_selection_as()
+        elif (
             event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter
         ) and not self.selection_rect.isNull():
             self.finalize_capture(manual_copy=True)
@@ -1033,6 +1310,9 @@ class ScreenshotOverlay(QWidget):
     def get_selected_pixmap(self):
         if self.selection_rect.isNull() or not self.screen_pixmap:
             return None
+
+        if self.text_input.isVisible():
+            self.commit_text_action()
 
         pixmap = self.screen_pixmap.copy(self.selection_rect)
         if hasattr(self, "draw_actions") and self.draw_actions:
@@ -1082,38 +1362,10 @@ class ScreenshotOverlay(QWidget):
         if not config_manager.get_value("screenshot_auto_save", False):
             return None
 
-        save_dir = str(
-            config_manager.get_value(
-                "screenshot_save_dir",
-                os.path.join(
-                    os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
-                ),
-            )
-        ).strip()
-        if not save_dir:
-            save_dir = os.path.join(
-                os.path.expanduser("~"), "Pictures", "x-tools-screenshots"
-            )
-
-        os.makedirs(save_dir, exist_ok=True)
-        file_name = self._build_screenshot_filename()
-        output_path = os.path.join(save_dir, file_name)
-
-        started = time.perf_counter()
-        ok = pixmap.save(output_path, "PNG")
-        elapsed = (time.perf_counter() - started) * 1000
-        metrics_store.record(
-            "screenshot.save",
-            elapsed,
-            {"ok": bool(ok), "path": output_path},
+        output_path = os.path.join(
+            self._get_screenshot_save_dir(), self._build_screenshot_filename()
         )
-
-        if ok:
-            logger.info("Screenshot saved: %s", output_path)
-            return output_path
-
-        logger.warning("Failed to save screenshot: %s", output_path)
-        return None
+        return self._save_pixmap_to_path(pixmap, output_path, source="auto")
 
     def _pin_pixmap(self, pixmap):
         pin_win = PinnedImageWindow(pixmap)
@@ -1127,7 +1379,9 @@ class ScreenshotOverlay(QWidget):
         QTimer.singleShot(100, pin_win.recognize_text)
         self.pinned_windows.append(pin_win)
 
-    def finalize_capture(self, manual_copy=False, manual_pin=False):
+    def finalize_capture(
+        self, manual_copy=False, manual_pin=False, manual_save_path=None
+    ):
         pixmap = self.get_selected_pixmap()
         if not pixmap:
             return
@@ -1135,13 +1389,26 @@ class ScreenshotOverlay(QWidget):
         auto_copy = bool(config_manager.get_value("screenshot_auto_copy", False))
         auto_pin = bool(config_manager.get_value("screenshot_auto_pin", False))
 
+        if manual_save_path:
+            saved_path = self._save_pixmap_to_path(
+                pixmap, manual_save_path, source="manual"
+            )
+            if not saved_path:
+                QMessageBox.warning(
+                    self,
+                    "保存失败",
+                    f"无法保存截图到:\n{manual_save_path}",
+                )
+                return
+
         if manual_copy or auto_copy:
             QApplication.clipboard().setPixmap(pixmap)
 
         if manual_pin or auto_pin:
             self._pin_pixmap(pixmap)
 
-        self._auto_save_pixmap(pixmap)
+        if not manual_save_path:
+            self._auto_save_pixmap(pixmap)
         self.close_overlay()
 
     def recognize_qr(self):
@@ -1180,5 +1447,9 @@ class ScreenshotOverlay(QWidget):
             logger.warning("QR decode error: %s", e)
 
     def close_overlay(self):
+        self.is_moving_action = False
+        self.moving_action_index = None
+        self.action_drag_last_pos = QPoint()
+        self.action_drag_changed = False
         self.hide()
         self.closed.emit()

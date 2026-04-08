@@ -2,7 +2,7 @@ import sys
 import ctypes
 import psutil
 from typing import Callable
-from PyQt6.QtCore import Qt, QTimer, QPoint, QSettings
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSettings, QRect, QSize
 from PyQt6.QtGui import QMouseEvent, QAction, QFont
 from PyQt6.QtWidgets import (
     QWidget,
@@ -143,7 +143,52 @@ class NetworkMonitorWidget(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.ensure_visible()
         self.keep_on_top()
+
+    @staticmethod
+    def _clamp_point_to_rect(point: QPoint, size: QSize, rect: QRect) -> QPoint:
+        max_x = rect.x() + max(0, rect.width() - size.width())
+        max_y = rect.y() + max(0, rect.height() - size.height())
+        return QPoint(
+            min(max(point.x(), rect.x()), max_x),
+            min(max(point.y(), rect.y()), max_y),
+        )
+
+    def _resolve_visible_rect(self) -> QRect | None:
+        frame_rect = self.frameGeometry()
+        for screen in QApplication.screens():
+            available_rect = screen.geometry()
+            if (
+                available_rect.intersects(frame_rect)
+                or available_rect.contains(frame_rect.topLeft())
+                or available_rect.contains(frame_rect.center())
+            ):
+                return available_rect
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            return screen.geometry()
+        return None
+
+    def ensure_visible(self):
+        visible_rect = self._resolve_visible_rect()
+        if visible_rect is None:
+            return
+
+        current_top_left = self.frameGeometry().topLeft()
+        clamped_top_left = self._clamp_point_to_rect(
+            current_top_left, self.size(), visible_rect
+        )
+        if clamped_top_left != current_top_left:
+            logger.info(
+                "Adjusted network monitor position from (%s, %s) to (%s, %s)",
+                current_top_left.x(),
+                current_top_left.y(),
+                clamped_top_left.x(),
+                clamped_top_left.y(),
+            )
+            self.move(clamped_top_left)
 
     def keep_on_top(self):
         try:
@@ -180,10 +225,21 @@ class NetworkMonitorWidget(QWidget):
             self.restoreGeometry(geometry)
         else:
             # Default position: bottom right part of the screen
-            screen = QApplication.primaryScreen().geometry()
-            self.move(screen.width() - 300, screen.height() - 100)
+            screen = QApplication.primaryScreen()
+            if screen is not None:
+                available_rect = screen.geometry()
+                default_pos = self._clamp_point_to_rect(
+                    QPoint(
+                        available_rect.right() - 299,
+                        available_rect.bottom() - 99,
+                    ),
+                    self.size(),
+                    available_rect,
+                )
+                self.move(default_pos)
 
         self.is_locked = self.settings.value("is_locked", type=bool, defaultValue=False)
+        self.ensure_visible()
 
     def save_settings(self):
         # Save absolute position explicitly
