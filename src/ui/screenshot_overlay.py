@@ -1,10 +1,11 @@
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, pyqtSignal, QSize, QSettings
 from PyQt6.QtGui import (
     QPainter,
     QColor,
     QPen,
     QPainterPath,
     QPainterPathStroker,
+    QPolygonF,
     QIcon,
     QPixmap,
     QFont,
@@ -22,8 +23,11 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
     QMessageBox,
+    QGraphicsDropShadowEffect,
+    QLabel,
 )
 from datetime import datetime
+import math
 import time
 import os
 
@@ -78,6 +82,8 @@ class ScreenshotOverlay(QWidget):
         self.color_format = "rgb"
         self.draw_color = QColor("#FF3333")  # Default Red
         self.draw_thickness = 3
+        self.settings = QSettings("x-tools", "screenshot_overlay")
+        self._load_annotation_style()
         self.draw_actions = []
         self.current_action = None
         self.mosaic_pixmap = None
@@ -154,6 +160,13 @@ class ScreenshotOverlay(QWidget):
             font.setPixelSize(18)
             painter.setFont(font)
             painter.drawText(QRect(0, 0, 24, 24), Qt.AlignmentFlag.AlignCenter, "T")
+        elif mode == "number":
+            font = painter.font()
+            font.setBold(True)
+            font.setPixelSize(14)
+            painter.setFont(font)
+            painter.drawEllipse(4, 4, 16, 16)
+            painter.drawText(QRect(4, 4, 16, 16), Qt.AlignmentFlag.AlignCenter, "1")
         elif mode == "eraser":
             painter.setPen(QPen(Qt.GlobalColor.white, 2))
             painter.drawRect(4, 8, 16, 8)
@@ -192,27 +205,100 @@ class ScreenshotOverlay(QWidget):
         painter.end()
         return QIcon(pixmap)
 
+    @staticmethod
+    def _add_toolbar_shadow(widget: QWidget, blur: int = 30):
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(blur)
+        shadow.setColor(QColor(0, 0, 0, 165))
+        shadow.setOffset(0, 8)
+        widget.setGraphicsEffect(shadow)
+
     def init_toolbar(self):
-        # Main overlay container for toolbar
+        # Transparent host: the visual weight lives in the rounded clusters below.
         self.toolbar_widget = QFrame(self)
-        self.toolbar_widget.setStyleSheet(
-            "QFrame#MainFrame { background-color: #2D2D2D; border: 1px solid #555; border-radius: 6px; }"
-            "QPushButton { background-color: transparent; color: white; border: none; padding: 6px 12px; font-weight: bold; font-family: 'Segoe UI', sans-serif; }"
-            "QPushButton:hover { background-color: #444; border-radius: 4px; }"
-            "QPushButton:checked { background-color: #555; border-radius: 4px; color: #00AEFF; }"
-            "QFrame#SubFrame { background-color: #383838; border: 1px solid #555; border-radius: 6px; margin-top: 5px; }"
-        )
         self.toolbar_widget.setObjectName("MainFrame")
+        self.toolbar_widget.setStyleSheet(
+            """
+            QFrame#MainFrame {
+                background: transparent;
+                border: none;
+            }
+            QFrame#ToolbarCluster, QFrame#SubFrame {
+                background-color: qlineargradient(
+                    x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 #34383D,
+                    stop: 0.46 #25292D,
+                    stop: 1 #181B1F
+                );
+                border: 1px solid rgba(255, 255, 255, 50);
+            }
+            QFrame#ToolbarCluster {
+                border-radius: 26px;
+            }
+            QFrame#SubFrame {
+                border-radius: 18px;
+            }
+            QFrame#ToolbarSeparator {
+                background-color: rgba(255, 255, 255, 46);
+                border: none;
+                min-width: 1px;
+                max-width: 1px;
+                margin: 9px 7px;
+            }
+            QPushButton[toolbarButton="true"] {
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 17px;
+                padding: 0;
+            }
+            QPushButton[toolbarButton="true"]:hover {
+                background-color: rgba(255, 255, 255, 28);
+                border: 1px solid rgba(255, 255, 255, 34);
+            }
+            QPushButton[toolbarButton="true"]:pressed {
+                background-color: rgba(0, 0, 0, 52);
+                border: 1px solid rgba(255, 255, 255, 22);
+            }
+            QPushButton[toolbarButton="true"]:checked {
+                background-color: qlineargradient(
+                    x1: 0, y1: 0, x2: 0, y2: 1,
+                    stop: 0 #5FA3FF,
+                    stop: 0.52 #367DE8,
+                    stop: 1 #2465C9
+                );
+                border: 1px solid rgba(255, 255, 255, 78);
+            }
+            QPushButton[colorButton="true"] {
+                border: 2px solid rgba(255, 255, 255, 34);
+                border-radius: 11px;
+                padding: 0;
+            }
+            QPushButton[colorButton="true"]:hover {
+                border: 2px solid rgba(255, 255, 255, 118);
+            }
+            QPushButton[colorButton="true"]:checked {
+                border: 2px solid #FFFFFF;
+            }
+            QLabel#ToolbarHint {
+                color: rgba(255, 255, 255, 170);
+                font-family: "Microsoft YaHei UI";
+                font-size: 11px;
+                padding-left: 2px;
+            }
+            """
+        )
 
         main_layout = QVBoxLayout(self.toolbar_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(8)
 
         # Sub Toolbar (Colors & Thickness)
-        self.sub_toolbar = QFrame()
+        self.sub_toolbar = QFrame(self.toolbar_widget)
         self.sub_toolbar.setObjectName("SubFrame")
         sub_layout = QHBoxLayout(self.sub_toolbar)
-        sub_layout.setContentsMargins(10, 5, 10, 5)
+        sub_layout.setContentsMargins(14, 8, 14, 8)
+        sub_layout.setSpacing(8)
+        self._add_toolbar_shadow(self.sub_toolbar, blur=22)
 
         # Color palettes
         colors = [
@@ -225,46 +311,86 @@ class ScreenshotOverlay(QWidget):
             "#FFFFFF",
             "#000000",
         ]
+        self.palette_colors = colors
         self.color_group = QButtonGroup(self)
         for i, h in enumerate(colors):
             btn = QPushButton()
-            btn.setFixedSize(18, 18)
+            btn.setProperty("colorButton", True)
+            btn.setFixedSize(22, 22)
             btn.setCheckable(True)
             btn.setStyleSheet(f"""
-                QPushButton {{ background-color: {h}; border: 2px solid transparent; border-radius: 9px; }}
-                QPushButton:checked {{ border: 2px solid white; }}
-                QPushButton:hover {{ border: 2px solid #888; }}
+                QPushButton {{
+                    background-color: {h};
+                    border: 2px solid rgba(255, 255, 255, 34);
+                    border-radius: 11px;
+                    padding: 0;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid rgba(255, 255, 255, 118);
+                }}
+                QPushButton:checked {{
+                    border: 2px solid #FFFFFF;
+                }}
             """)
             btn.clicked.connect(lambda checked, c=h: self.set_draw_color(c))
             self.color_group.addButton(btn, i)
             sub_layout.addWidget(btn)
-            if i == 0:
-                btn.setChecked(True)
+        self._sync_color_buttons()
 
         sub_layout.addSpacing(15)
 
         # Thickness hint
-        from PyQt6.QtWidgets import QLabel
-
         hint_label = QLabel("滚轮调节粗细")
-        hint_label.setStyleSheet("color: #AAA; font-size: 11px;")
+        hint_label.setObjectName("ToolbarHint")
         sub_layout.addWidget(hint_label)
 
         main_layout.addWidget(self.sub_toolbar)
         self.sub_toolbar.hide()
 
         # Tools Row
-        self.tools_row = QFrame()
+        self.tools_row = QFrame(self.toolbar_widget)
+        self.tools_row.setObjectName("ToolbarRow")
         tools_layout = QHBoxLayout(self.tools_row)
-        tools_layout.setContentsMargins(5, 5, 5, 5)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        tools_layout.setSpacing(14)
+
+        tool_cluster = QFrame(self.tools_row)
+        tool_cluster.setObjectName("ToolbarCluster")
+        action_cluster = QFrame(self.tools_row)
+        action_cluster.setObjectName("ToolbarCluster")
+        self._add_toolbar_shadow(tool_cluster)
+        self._add_toolbar_shadow(action_cluster)
+
+        tool_layout = QHBoxLayout(tool_cluster)
+        tool_layout.setContentsMargins(10, 8, 10, 8)
+        tool_layout.setSpacing(7)
+        action_layout = QHBoxLayout(action_cluster)
+        action_layout.setContentsMargins(10, 8, 10, 8)
+        action_layout.setSpacing(7)
+        tools_layout.addWidget(tool_cluster)
+        tools_layout.addWidget(action_cluster)
 
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(False)
 
+        def create_separator():
+            separator = QFrame()
+            separator.setObjectName("ToolbarSeparator")
+            separator.setFixedHeight(32)
+            return separator
+
+        def prepare_toolbar_button(btn):
+            btn.setProperty("toolbarButton", True)
+            btn.setFixedSize(46, 46)
+            btn.setIconSize(QSize(24, 24))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            return btn
+
         def create_tool(name, mode):
             btn = QPushButton()
+            prepare_toolbar_button(btn)
             btn.setIcon(self.create_icon(mode))
-            btn.setIconSize(QSize(18, 18))
             btn.setToolTip(name)
             btn.setCheckable(True)
             btn.clicked.connect(
@@ -273,79 +399,58 @@ class ScreenshotOverlay(QWidget):
             self.tool_group.addButton(btn)
             return btn
 
+        def create_action(name, mode, callback):
+            btn = QPushButton()
+            prepare_toolbar_button(btn)
+            btn.setIcon(self.create_icon(mode))
+            btn.setToolTip(name)
+            btn.clicked.connect(callback)
+            return btn
+
         btn_rect = create_tool("矩形", "rect")
-        btn_line = create_tool("直线", "line")
-        btn_arrow = create_tool("箭头", "arrow")
         btn_pen = create_tool("画笔", "pen")
+        btn_arrow = create_tool("箭头", "arrow")
+        btn_line = create_tool("直线", "line")
         btn_mosaic = create_tool("马赛克", "mosaic")
         btn_text = create_tool("文字", "text")
+        btn_number = create_tool("编号", "number")
         btn_eraser = create_tool("橡皮擦", "eraser")
 
-        tools_layout.addWidget(btn_rect)
-        tools_layout.addWidget(btn_line)
-        tools_layout.addWidget(btn_arrow)
-        tools_layout.addWidget(btn_pen)
-        tools_layout.addWidget(btn_mosaic)
-        tools_layout.addWidget(btn_text)
-        tools_layout.addWidget(btn_eraser)
+        tool_layout.addWidget(btn_rect)
+        tool_layout.addWidget(btn_pen)
+        tool_layout.addWidget(btn_arrow)
+        tool_layout.addWidget(btn_line)
+        tool_layout.addWidget(btn_mosaic)
+        tool_layout.addWidget(create_separator())
+        tool_layout.addWidget(btn_text)
+        tool_layout.addWidget(btn_number)
+        tool_layout.addWidget(btn_eraser)
 
-        btn_undo = QPushButton()
-        btn_undo.setIcon(self.create_icon("undo"))
-        btn_undo.setIconSize(QSize(18, 18))
-        btn_undo.setToolTip("撤销")
-        btn_undo.clicked.connect(self.undo_action)
-        tools_layout.addWidget(btn_undo)
+        btn_undo = create_action("撤销", "undo", self.undo_action)
+        btn_redo = create_action("重做", "redo", self.redo_action)
+        btn_pin = create_action("贴图 (P)", "pin", self.on_pin_clicked)
+        btn_qr = create_action("扫码 (Q)", "qr", self.on_qr_clicked)
+        btn_save = create_action("保存到... (Ctrl+S)", "save", self.on_save_clicked)
+        btn_copy = create_action("复制到剪贴板 (Enter)", "copy", self.on_copy_clicked)
+        btn_cancel = create_action("退出 (Esc)", "close", self.close_overlay)
 
-        btn_redo = QPushButton()
-        btn_redo.setIcon(self.create_icon("redo"))
-        btn_redo.setIconSize(QSize(18, 18))
-        btn_redo.setToolTip("重做")
-        btn_redo.clicked.connect(self.redo_action)
-        tools_layout.addWidget(btn_redo)
-
-        tools_layout.addSpacing(10)
-
-        btn_copy = QPushButton()
-        btn_copy.setIcon(self.create_icon("copy"))
-        btn_copy.setIconSize(QSize(18, 18))
-        btn_copy.setToolTip("复制到剪贴板 (Enter)")
-        btn_copy.clicked.connect(self.on_copy_clicked)
-
-        btn_pin = QPushButton()
-        btn_pin.setIcon(self.create_icon("pin"))
-        btn_pin.setIconSize(QSize(18, 18))
-        btn_pin.setToolTip("贴图 (P)")
-        btn_pin.clicked.connect(self.on_pin_clicked)
-
-        btn_qr = QPushButton()
-        btn_qr.setIcon(self.create_icon("qr"))
-        btn_qr.setIconSize(QSize(18, 18))
-        btn_qr.setToolTip("扫码 (Q)")
-        btn_qr.clicked.connect(self.on_qr_clicked)
-
-        btn_save = QPushButton()
-        btn_save.setIcon(self.create_icon("save"))
-        btn_save.setIconSize(QSize(18, 18))
-        btn_save.setToolTip("保存到... (Ctrl+S)")
-        btn_save.clicked.connect(self.on_save_clicked)
-
-        btn_cancel = QPushButton()
-        btn_cancel.setIcon(self.create_icon("close"))
-        btn_cancel.setIconSize(QSize(18, 18))
-        btn_cancel.setToolTip("退出 (Esc)")
-        btn_cancel.clicked.connect(self.close_overlay)
-
-        tools_layout.addWidget(btn_pin)
-        tools_layout.addWidget(btn_qr)
-        tools_layout.addWidget(btn_save)
-        tools_layout.addWidget(btn_cancel)
-        tools_layout.addWidget(btn_copy)
+        action_layout.addWidget(btn_undo)
+        action_layout.addWidget(btn_redo)
+        action_layout.addWidget(create_separator())
+        action_layout.addWidget(btn_pin)
+        action_layout.addWidget(btn_qr)
+        action_layout.addWidget(create_separator())
+        action_layout.addWidget(btn_save)
+        action_layout.addWidget(btn_copy)
+        action_layout.addWidget(btn_cancel)
 
         main_layout.addWidget(self.tools_row)
         self.toolbar_widget.hide()
 
     def set_draw_color(self, color_hex):
         self.draw_color = QColor(color_hex)
+        self._save_annotation_style()
+        self._sync_color_buttons()
         self.text_input.setStyleSheet(
             f"background: transparent; border: none; font-size: 18px; color: {color_hex}; outline: none; margin: 0; padding: 0;"
         )
@@ -353,9 +458,169 @@ class ScreenshotOverlay(QWidget):
             self.update_text_input_style()
 
     def set_draw_thickness(self, val):
-        self.draw_thickness = val
+        self.draw_thickness = max(2, min(50, int(val)))
+        self._save_annotation_style()
         if self.text_input.isVisible():
             self.update_text_input_style()
+
+    def _load_annotation_style(self):
+        color_hex = str(
+            self.settings.value("draw_color", self.draw_color.name(), type=str)
+        ).strip()
+        color = QColor(color_hex)
+        if color.isValid():
+            self.draw_color = color
+
+        thickness = self.settings.value(
+            "draw_thickness", self.draw_thickness, type=int
+        )
+        if thickness is not None:
+            self.draw_thickness = max(2, min(50, int(thickness)))
+
+    def _save_annotation_style(self):
+        self.settings.setValue("draw_color", self.draw_color.name().upper())
+        self.settings.setValue("draw_thickness", self.draw_thickness)
+
+    def _sync_color_buttons(self):
+        if not hasattr(self, "color_group"):
+            return
+
+        current_color = self.draw_color.name().upper()
+        for button in self.color_group.buttons():
+            color_index = self.color_group.id(button)
+            color_hex = self.palette_colors[color_index].upper()
+            button.setChecked(color_hex == current_color)
+
+    @staticmethod
+    def _enable_quality_rendering(painter: QPainter):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+    @staticmethod
+    def _annotation_font(base_font: QFont, pixel_size: int, bold: bool = False) -> QFont:
+        font = QFont(base_font)
+        font.setFamily("Microsoft YaHei UI")
+        font.setPixelSize(max(1, int(pixel_size)))
+        font.setBold(bold)
+        font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        return font
+
+    @staticmethod
+    def _number_text_color(marker_color: QColor) -> QColor:
+        color = QColor(marker_color)
+        if not color.isValid():
+            return QColor("#FFFFFF")
+
+        perceived_brightness = (
+            color.red() * 299 + color.green() * 587 + color.blue() * 114
+        ) / 1000
+        return QColor("#000000" if perceived_brightness > 140 else "#FFFFFF")
+
+    @staticmethod
+    def _number_marker_size(thickness: int) -> int:
+        return min(48, max(24, 20 + int(thickness) * 2))
+
+    @staticmethod
+    def _smooth_path(points) -> QPainterPath:
+        path = QPainterPath()
+        if not points:
+            return path
+
+        path.moveTo(QPointF(points[0]))
+        if len(points) == 1:
+            return path
+        if len(points) == 2:
+            path.lineTo(QPointF(points[1]))
+            return path
+
+        for index in range(1, len(points) - 1):
+            current = points[index]
+            next_point = points[index + 1]
+            mid = QPointF(
+                (current.x() + next_point.x()) / 2,
+                (current.y() + next_point.y()) / 2,
+            )
+            path.quadTo(QPointF(current), mid)
+        path.lineTo(QPointF(points[-1]))
+        return path
+
+    @staticmethod
+    def _draw_arrow(painter: QPainter, p1: QPoint, p2: QPoint, color, thickness: int):
+        start = QPointF(p1)
+        end = QPointF(p2)
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 1:
+            return
+
+        arrow_color = QColor(color)
+        ux = dx / length
+        uy = dy / length
+        head_len = min(max(14.0, float(thickness) * 5.5), max(8.0, length * 0.45))
+        head_width = min(max(10.0, float(thickness) * 3.8), max(6.0, length * 0.35))
+        shaft_end = QPointF(
+            end.x() - ux * head_len * 0.45,
+            end.y() - uy * head_len * 0.45,
+        )
+        base = QPointF(end.x() - ux * head_len, end.y() - uy * head_len)
+        normal_x = -uy
+        normal_y = ux
+        left = QPointF(
+            base.x() + normal_x * head_width / 2,
+            base.y() + normal_y * head_width / 2,
+        )
+        right = QPointF(
+            base.x() - normal_x * head_width / 2,
+            base.y() - normal_y * head_width / 2,
+        )
+
+        painter.setPen(
+            QPen(
+                arrow_color,
+                thickness,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(start, shaft_end)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(arrow_color)
+        painter.drawPolygon(QPolygonF([end, left, right]))
+
+    def _draw_number_marker(
+        self,
+        painter: QPainter,
+        rect: QRect,
+        marker_color,
+        number_text: str,
+        outline_width: int,
+    ):
+        color = QColor(marker_color)
+        if not color.isValid():
+            color = QColor("#FF3333")
+
+        ellipse_rect = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 35))
+        painter.drawEllipse(ellipse_rect.translated(0, 1))
+
+        border_width = max(1.0, min(2.0, float(outline_width) * 0.45))
+        painter.setPen(QPen(QColor(255, 255, 255, 190), border_width))
+        painter.setBrush(color)
+        painter.drawEllipse(ellipse_rect)
+
+        font = self._annotation_font(
+            painter.font(), max(12, int(rect.height() * 0.52)), bold=True
+        )
+        painter.setFont(font)
+        painter.setPen(self._number_text_color(color))
+        painter.drawText(QRectF(rect), Qt.AlignmentFlag.AlignCenter, number_text)
 
     def handle_tool_click(self, btn, mode):
         # Enforce exclusivity manually to allow unchecking
@@ -364,7 +629,7 @@ class ScreenshotOverlay(QWidget):
                 if b != btn:
                     b.setChecked(False)
             self.draw_mode = mode
-            if mode in ["rect", "line", "arrow", "pen", "text"]:
+            if mode in ["rect", "line", "arrow", "pen", "text", "number"]:
                 self.sub_toolbar.show()
             else:
                 self.sub_toolbar.hide()
@@ -417,7 +682,7 @@ class ScreenshotOverlay(QWidget):
 
     @staticmethod
     def _is_movable_action_type(action_type):
-        return action_type in {"text", "rect", "line", "arrow"}
+        return action_type in {"text", "rect", "line", "arrow", "number"}
 
     @staticmethod
     def _normalize_output_path(output_path: str) -> str:
@@ -430,10 +695,27 @@ class ScreenshotOverlay(QWidget):
     def _translate_action(action, delta: QPoint):
         if delta.isNull():
             return
-        if action.get("type") == "text":
+        if action.get("type") in {"text", "number"}:
             action["pos"] = action["pos"] + delta
         elif "points" in action:
             action["points"] = [point + delta for point in action["points"]]
+
+    @staticmethod
+    def _get_number_action_rect(action) -> QRect:
+        size = max(14, int(action.get("size", 24)))
+        top_left = action["pos"] - QPoint(size // 2, size // 2)
+        return QRect(top_left, QSize(size, size))
+
+    def _next_number_label(self):
+        max_number = 0
+        for action in self.draw_actions:
+            if action.get("type") != "number":
+                continue
+            try:
+                max_number = max(max_number, int(action.get("number", 0)))
+            except (TypeError, ValueError):
+                continue
+        return max_number + 1
 
     def _get_text_action_rect(self, action) -> QRect:
         font = QFont(self.text_input.font())
@@ -448,6 +730,11 @@ class ScreenshotOverlay(QWidget):
         action_type = action.get("type")
         if action_type == "text":
             return self._get_text_action_rect(action).adjusted(-4, -4, 4, 4).contains(
+                pos
+            )
+
+        if action_type == "number":
+            return self._get_number_action_rect(action).adjusted(-4, -4, 4, 4).contains(
                 pos
             )
 
@@ -466,6 +753,20 @@ class ScreenshotOverlay(QWidget):
             return stroker.createStroke(path).contains(QPointF(pos))
 
         return False
+
+    def _add_number_action(self, pos: QPoint):
+        self._record_undo_state()
+        self.draw_actions.append(
+            {
+                "type": "number",
+                "color": QColor(self.draw_color),
+                "number": self._next_number_label(),
+                "pos": QPoint(pos),
+                "size": self._number_marker_size(self.draw_thickness),
+                "thickness": max(2, min(6, self.draw_thickness)),
+            }
+        )
+        self.update()
 
     def _find_movable_action_index(self, pos: QPoint):
         for index in range(len(self.draw_actions) - 1, -1, -1):
@@ -500,6 +801,9 @@ class ScreenshotOverlay(QWidget):
 
     def update_text_input_style(self):
         font_size = max(12, 12 + self.draw_thickness * 2)
+        self.text_input.setFont(
+            self._annotation_font(self.text_input.font(), font_size)
+        )
         self.text_input.setStyleSheet(
             f"background: transparent; border: 1px dashed {self.draw_color.name()}; font-size: {font_size}px; color: {self.draw_color.name()}; outline: none; margin: 0; padding: 0;"
         )
@@ -674,6 +978,7 @@ class ScreenshotOverlay(QWidget):
             return
 
         painter = QPainter(self)
+        self._enable_quality_rendering(painter)
         painter.drawPixmap(0, 0, self.screen_pixmap)
 
         # Draw darkened overlay
@@ -739,17 +1044,34 @@ class ScreenshotOverlay(QWidget):
             self.draw_mode
             and self.draw_mode != "text"
             and self.draw_mode != "mosaic"
+            and self.draw_mode != "number"
             and self.toolbar_widget.isVisible()
             and self.selection_rect.contains(self.current_mouse_pos)
         ):
-            from PyQt6.QtCore import QPointF
-
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(
                 self.draw_color if self.draw_mode != "eraser" else Qt.GlobalColor.white
             )
             r = self.draw_thickness / 2
             painter.drawEllipse(QPointF(self.current_mouse_pos), r, r)
+
+        if (
+            self.draw_mode == "number"
+            and self.toolbar_widget.isVisible()
+            and self.selection_rect.contains(self.current_mouse_pos)
+        ):
+            size = self._number_marker_size(self.draw_thickness)
+            rect = QRect(
+                self.current_mouse_pos - QPoint(size // 2, size // 2),
+                QSize(size, size),
+            )
+            self._draw_number_marker(
+                painter,
+                rect,
+                self.draw_color,
+                str(self._next_number_label()),
+                max(2, min(6, self.draw_thickness)),
+            )
 
         # Draw magnifier
         if not self.current_mouse_pos.isNull() and self.screen_image:
@@ -902,6 +1224,7 @@ class ScreenshotOverlay(QWidget):
                 )
 
     def draw_all_actions(self, painter):
+        self._enable_quality_rendering(painter)
         actions = self.draw_actions.copy()
         if self.current_action:
             actions.append(self.current_action)
@@ -921,50 +1244,43 @@ class ScreenshotOverlay(QWidget):
                     Qt.PenJoinStyle.RoundJoin,
                 )
             )
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
             if t == "rect" and len(pts) == 2:
-                painter.drawRect(QRect(pts[0], pts[1]))
+                rect = QRect(pts[0], pts[1]).normalized()
+                painter.drawRoundedRect(
+                    QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2
+                )
             elif t == "line" and len(pts) == 2:
-                painter.drawLine(pts[0], pts[1])
+                painter.drawLine(QPointF(pts[0]), QPointF(pts[1]))
             elif t == "arrow" and len(pts) == 2:
-                p1, p2 = pts[0], pts[1]
-                painter.drawLine(p1, p2)
-                # Arrow head math
-                import math
-
-                angle = math.atan2(p1.y() - p2.y(), p1.x() - p2.x())
-                m = 12
-                p3 = QPoint(
-                    int(p2.x() + m * math.cos(angle + 0.5)),
-                    int(p2.y() + m * math.sin(angle + 0.5)),
-                )
-                p4 = QPoint(
-                    int(p2.x() + m * math.cos(angle - 0.5)),
-                    int(p2.y() + m * math.sin(angle - 0.5)),
-                )
-                painter.drawLine(p2, p3)
-                painter.drawLine(p2, p4)
+                self._draw_arrow(painter, pts[0], pts[1], color, thickness)
             elif t == "pen" and len(pts) > 1:
-                painter.drawPolyline(*pts)
+                painter.drawPath(self._smooth_path(pts))
             elif t == "text":
                 painter.setPen(act["color"])
-                f = painter.font()
                 font_size = act.get("font_size", 18)
-                f.setPixelSize(font_size)
-                painter.setFont(f)
+                painter.setFont(self._annotation_font(painter.font(), font_size))
                 fm = painter.fontMetrics()
                 # To match QLineEdit visual position alignment approximately
                 painter.drawText(act["pos"] + QPoint(2, fm.ascent() + 2), act["text"])
+            elif t == "number":
+                rect = self._get_number_action_rect(act)
+                outline_width = max(1, int(act.get("thickness", 2)))
+                self._draw_number_marker(
+                    painter,
+                    rect,
+                    act.get("color", QColor("#FF3333")),
+                    str(act.get("number", 1)),
+                    outline_width,
+                )
             elif t in ["mosaic", "eraser"] and len(pts) > 1:
                 stroker = QPainterPathStroker()
                 stroker.setWidth(15)
                 stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
                 stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
 
-                path = QPainterPath()
-                path.moveTo(float(pts[0].x()), float(pts[0].y()))
-                for p in pts[1:]:
-                    path.lineTo(float(p.x()), float(p.y()))
+                path = self._smooth_path(pts)
 
                 s_path = stroker.createStroke(path)
                 painter.setClipPath(s_path)
@@ -1058,13 +1374,22 @@ class ScreenshotOverlay(QWidget):
                 self.setCursor(Qt.CursorShape.CrossCursor)
 
     def wheelEvent(self, event):
-        adjustable_modes = {"rect", "line", "arrow", "pen", "text", "mosaic", "eraser"}
+        adjustable_modes = {
+            "rect",
+            "line",
+            "arrow",
+            "pen",
+            "text",
+            "number",
+            "mosaic",
+            "eraser",
+        }
         if not self.selection_rect.isNull() and self.draw_mode in adjustable_modes:
             delta = event.angleDelta().y()
             if delta > 0:
-                self.draw_thickness = min(50, self.draw_thickness + 2)
+                self.set_draw_thickness(self.draw_thickness + 2)
             elif delta < 0:
-                self.draw_thickness = max(2, self.draw_thickness - 2)
+                self.set_draw_thickness(self.draw_thickness - 2)
 
             if self.draw_mode == "text" and self.text_input.isVisible():
                 self.update_text_input_style()
@@ -1109,6 +1434,12 @@ class ScreenshotOverlay(QWidget):
                     self.setCursor(Qt.CursorShape.ClosedHandCursor)
                     return
 
+                if self.draw_mode == "number":
+                    if self.text_input.isVisible():
+                        self.commit_text_action()
+                    self._add_number_action(pos)
+                    return
+
                 if self.draw_mode:
                     self.current_action = {
                         "type": self.draw_mode,
@@ -1125,6 +1456,17 @@ class ScreenshotOverlay(QWidget):
                 if self.text_input.isVisible():
                     self.commit_text_action()
                 self.toolbar_widget.hide()
+            elif not self.selection_rect.isNull() and (
+                self.draw_actions or self.text_input.isVisible()
+            ):
+                if self.text_input.isVisible():
+                    self.commit_text_action()
+                self.is_drawing = False
+                self.current_action = None
+                self.show_toolbar()
+                self.update_cursor(pos)
+                self.update()
+                return
             else:
                 self.start_pos = pos
                 self.end_pos = self.start_pos

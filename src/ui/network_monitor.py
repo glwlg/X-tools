@@ -18,6 +18,10 @@ from src.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+TASKBAR_ANCHOR_MARGIN = 6
+FALLBACK_TASKBAR_HEIGHT = 48
+
+
 class NetworkMonitorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -139,11 +143,12 @@ class NetworkMonitorWidget(QWidget):
 
         # Continuously enforce topmost if visible
         if self.isVisible():
+            self.anchor_to_taskbar()
             self.keep_on_top()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.ensure_visible()
+        self.anchor_to_taskbar()
         self.keep_on_top()
 
     @staticmethod
@@ -170,6 +175,114 @@ class NetworkMonitorWidget(QWidget):
         if screen is not None:
             return screen.geometry()
         return None
+
+    @staticmethod
+    def _infer_taskbar_rect(
+        screen_rect: QRect,
+        available_rect: QRect,
+        fallback_height: int = FALLBACK_TASKBAR_HEIGHT,
+    ) -> QRect:
+        top_band = max(0, available_rect.top() - screen_rect.top())
+        bottom_band = max(0, screen_rect.bottom() - available_rect.bottom())
+        left_band = max(0, available_rect.left() - screen_rect.left())
+        right_band = max(0, screen_rect.right() - available_rect.right())
+
+        largest_band = max(top_band, bottom_band, left_band, right_band)
+        if largest_band <= 0:
+            height = min(fallback_height, max(1, screen_rect.height()))
+            return QRect(
+                screen_rect.left(),
+                screen_rect.bottom() - height + 1,
+                screen_rect.width(),
+                height,
+            )
+
+        if bottom_band == largest_band:
+            return QRect(
+                screen_rect.left(),
+                available_rect.bottom() + 1,
+                screen_rect.width(),
+                bottom_band,
+            )
+        if top_band == largest_band:
+            return QRect(
+                screen_rect.left(),
+                screen_rect.top(),
+                screen_rect.width(),
+                top_band,
+            )
+        if left_band == largest_band:
+            return QRect(
+                screen_rect.left(),
+                screen_rect.top(),
+                left_band,
+                screen_rect.height(),
+            )
+
+        return QRect(
+            available_rect.right() + 1,
+            screen_rect.top(),
+            right_band,
+            screen_rect.height(),
+        )
+
+    @staticmethod
+    def _taskbar_left_anchor_point(
+        taskbar_rect: QRect,
+        widget_size: QSize,
+        margin: int = TASKBAR_ANCHOR_MARGIN,
+        bounding_rect: QRect | None = None,
+    ) -> QPoint:
+        is_horizontal_taskbar = taskbar_rect.width() >= taskbar_rect.height()
+        if is_horizontal_taskbar:
+            target = QPoint(
+                taskbar_rect.left() + margin,
+                taskbar_rect.top()
+                + max(0, (taskbar_rect.height() - widget_size.height()) // 2),
+            )
+        else:
+            target = QPoint(
+                taskbar_rect.left()
+                + max(0, (taskbar_rect.width() - widget_size.width()) // 2),
+                taskbar_rect.top() + margin,
+            )
+        if bounding_rect is None:
+            bounding_rect = taskbar_rect
+        return NetworkMonitorWidget._clamp_point_to_rect(
+            target, widget_size, bounding_rect
+        )
+
+    def _resolve_taskbar_anchor_context(self) -> tuple[QRect, QRect] | None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return None
+
+        screen_rect = screen.geometry()
+        return (
+            self._infer_taskbar_rect(screen_rect, screen.availableGeometry()),
+            screen_rect,
+        )
+
+    def anchor_to_taskbar(self):
+        anchor_context = self._resolve_taskbar_anchor_context()
+        if anchor_context is None:
+            self.ensure_visible()
+            return
+
+        taskbar_rect, screen_rect = anchor_context
+        target_top_left = self._taskbar_left_anchor_point(
+            taskbar_rect, self.size(), bounding_rect=screen_rect
+        )
+        current_top_left = self.frameGeometry().topLeft()
+        if target_top_left != current_top_left:
+            logger.info(
+                "Anchored network monitor to taskbar from (%s, %s) to (%s, %s)",
+                current_top_left.x(),
+                current_top_left.y(),
+                target_top_left.x(),
+                target_top_left.y(),
+            )
+            self.move(target_top_left)
 
     def ensure_visible(self):
         visible_rect = self._resolve_visible_rect()
@@ -215,44 +328,14 @@ class NetworkMonitorWidget(QWidget):
             logger.warning("Failed to set window to top most: %s", e)
 
     def load_settings(self):
-        geometry = self.settings.value("geometry")
-        pos_x = self.settings.value("pos_x", type=int)
-        pos_y = self.settings.value("pos_y", type=int)
-
-        if pos_x is not None and pos_y is not None:
-            self.move(pos_x, pos_y)
-        elif geometry:
-            self.restoreGeometry(geometry)
-        else:
-            # Default position: bottom right part of the screen
-            screen = QApplication.primaryScreen()
-            if screen is not None:
-                available_rect = screen.geometry()
-                default_pos = self._clamp_point_to_rect(
-                    QPoint(
-                        available_rect.right() - 299,
-                        available_rect.bottom() - 99,
-                    ),
-                    self.size(),
-                    available_rect,
-                )
-                self.move(default_pos)
-
         self.is_locked = self.settings.value("is_locked", type=bool, defaultValue=False)
-        self.ensure_visible()
+        self.anchor_to_taskbar()
 
     def save_settings(self):
-        # Save absolute position explicitly
-        if self.parentWidget() or True:
-            # If we reparented to taskbar, pos() is relative to taskbar.
-            # However, when we restart, before showEvent, parent is None (desktop).
-            # So restoring this relative pos to desktop will put it in the top left.
-            # We must save global position.
-            global_pos = self.mapToGlobal(QPoint(0, 0))
-            self.settings.setValue("pos_x", global_pos.x())
-            self.settings.setValue("pos_y", global_pos.y())
-
-        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.remove("pos_x")
+        self.settings.remove("pos_y")
+        self.settings.remove("geometry")
+        self.settings.setValue("placement", "taskbar_left")
         self.settings.setValue("is_locked", self.is_locked)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -269,6 +352,7 @@ class NetworkMonitorWidget(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and not self.is_locked:
+            self.anchor_to_taskbar()
             self.save_settings()
 
     def contextMenuEvent(self, event):

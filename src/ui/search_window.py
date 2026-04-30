@@ -693,20 +693,61 @@ class SearchWindow(AcrylicWindow):
         shadow.setColor(QColor(0, 0, 0, 50))
         self.container.setGraphicsEffect(shadow)
 
+    @staticmethod
+    def _theme_color(theme, key, fallback):
+        value = str(theme.get(key, fallback) or "").strip()
+        if value.lower() == "transparent":
+            return "transparent"
+
+        color = QColor(value)
+        if not color.isValid():
+            return fallback
+        return color.name().upper()
+
+    @staticmethod
+    def _theme_color_with_alpha(theme, key, fallback, alpha):
+        value = str(theme.get(key, fallback) or "").strip()
+        if value.lower() == "transparent":
+            return "transparent"
+
+        color = QColor(value)
+        if not color.isValid():
+            color = QColor(fallback)
+        return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha})"
+
+    @staticmethod
+    def _is_dark_theme_config(theme_name, theme):
+        if theme_name == "Dark":
+            return True
+        if theme_name == "Light":
+            return False
+
+        color = QColor(str(theme.get("window_bg", "#FFFFFF")))
+        return color.isValid() and color.lightness() < 128
+
     def _apply_fluent_theme(self):
         theme_name = config_manager.get_theme_name()
-        if theme_name == "Dark":
-            setTheme(Theme.DARK)
-            self.windowEffect.setMicaEffect(self.winId(), isDarkMode=True)
-            self.setStyleSheet(
-                "#searchContainer { background-color: rgba(30, 30, 34, 180); border-radius: 12px; }"
-            )
-        else:
-            setTheme(Theme.LIGHT)
-            self.windowEffect.setMicaEffect(self.winId(), isDarkMode=False)
-            self.setStyleSheet(
-                "#searchContainer { background-color: rgba(250, 250, 252, 220); border-radius: 12px; }"
-            )
+        theme = config_manager.get_theme()
+        dark = self._is_dark_theme_config(theme_name, theme)
+        setTheme(Theme.DARK if dark else Theme.LIGHT)
+        self.windowEffect.setMicaEffect(self.winId(), isDarkMode=dark)
+
+        window_bg = self._theme_color_with_alpha(
+            theme,
+            "window_bg",
+            "#1E1E1E" if dark else "#FAFAFC",
+            210 if dark else 235,
+        )
+        border = self._theme_color_with_alpha(theme, "border", "#3E3E3E", 160)
+        self.setStyleSheet(
+            f"""
+            #searchContainer {{
+                background-color: {window_bg};
+                border: 1px solid {border};
+                border-radius: 12px;
+            }}
+            """
+        )
 
     def _style_search_bar(self):
         # Rely primarily on qfluentwidgets native drawing, just increase font size and remove border artifacts
@@ -725,61 +766,81 @@ class SearchWindow(AcrylicWindow):
         """)
 
     def _style_result_list(self):
-        dark = isDarkTheme()
-        if dark:
-            qss = """
-                ListWidget {
-                    background-color: transparent; border: none; outline: none;
-                }
-                ListWidget::item {
-                    padding: 12px 16px;
-                    border-radius: 8px;
-                    color: #E2E4EB;
-                    font-size: 15px;
-                }
-                ListWidget::item:selected {
-                    background-color: rgba(76, 194, 255, 45);
-                    color: #FFFFFF;
-                }
-                ListWidget::item:hover:!selected {
-                    background-color: rgba(255, 255, 255, 15);
-                }
-            """
-            preview_qss = (
-                "QPlainTextEdit#previewText {"
-                "background-color: rgba(255,255,255,18);"
-                "color: #E2E4EB;"
-                "border: 1px solid rgba(255,255,255,22);"
-                "}"
-            )
-            title_qss = "color: #E2E4EB; font-size: 13px; font-weight: bold;"
-        else:
-            qss = """
-                ListWidget {
-                    background-color: transparent; border: none; outline: none;
-                }
-                ListWidget::item {
-                    padding: 12px 16px;
-                    border-radius: 8px;
-                    color: #2C2C3A;
-                    font-size: 15px;
-                }
-                ListWidget::item:selected {
-                    background-color: rgba(68, 85, 238, 35);
-                    color: #1A1A2E;
-                }
-                ListWidget::item:hover:!selected {
-                    background-color: rgba(0, 0, 0, 10);
-                }
-            """
-            preview_qss = (
-                "QPlainTextEdit#previewText {"
-                "background-color: rgba(255,255,255,176);"
-                "color: #2C2C3A;"
-                "border: 1px solid rgba(0,0,0,12);"
-                "}"
-            )
-            title_qss = "color: #2C2C3A; font-size: 13px; font-weight: bold;"
+        theme = config_manager.get_theme()
+        text_color = self._theme_color(theme, "text_color", "#E2E4EB")
+        input_bg = self._theme_color_with_alpha(theme, "input_bg", "#FFFFFF", 210)
+        border = self._theme_color_with_alpha(theme, "border", "#3E3E3E", 150)
+        highlight_hover = self._theme_color_with_alpha(
+            theme, "highlight", "#007ACC", 28
+        )
+        selection_bg = self._theme_color(theme, "selection_bg", "#094771")
+        selection_text = self._theme_color(theme, "selection_text", "#FFFFFF")
+        scrollbar_bg = self._theme_color(theme, "scrollbar_bg", "transparent")
+        scrollbar_handle = self._theme_color(theme, "scrollbar_handle", "#424242")
+
+        qss = f"""
+            ListWidget {{
+                background-color: transparent; border: none; outline: none;
+            }}
+            ListWidget::item {{
+                padding: 12px 16px;
+                border-radius: 8px;
+                color: {text_color};
+                font-size: 15px;
+            }}
+            ListWidget::item:selected {{
+                background-color: {selection_bg};
+                color: {selection_text};
+            }}
+            ListWidget::item:hover:!selected {{
+                background-color: {highlight_hover};
+                color: {text_color};
+            }}
+            ListWidget QScrollBar:vertical {{
+                background: {scrollbar_bg};
+                width: 8px;
+                margin: 2px 0;
+            }}
+            ListWidget QScrollBar::handle:vertical {{
+                background: {scrollbar_handle};
+                border-radius: 4px;
+                min-height: 24px;
+            }}
+            ListWidget QScrollBar::add-line:vertical,
+            ListWidget QScrollBar::sub-line:vertical {{
+                height: 0;
+                border: none;
+                background: transparent;
+            }}
+        """
+        preview_qss = (
+            "QPlainTextEdit#previewText {"
+            f"background-color: {input_bg};"
+            f"color: {text_color};"
+            f"border: 1px solid {border};"
+            "border-radius: 8px;"
+            "padding: 8px;"
+            f"selection-background-color: {selection_bg};"
+            f"selection-color: {selection_text};"
+            "}"
+            "QPlainTextEdit#previewText QScrollBar:vertical {"
+            f"background: {scrollbar_bg};"
+            "width: 8px;"
+            "margin: 2px 0;"
+            "}"
+            "QPlainTextEdit#previewText QScrollBar::handle:vertical {"
+            f"background: {scrollbar_handle};"
+            "border-radius: 4px;"
+            "min-height: 24px;"
+            "}"
+            "QPlainTextEdit#previewText QScrollBar::add-line:vertical,"
+            "QPlainTextEdit#previewText QScrollBar::sub-line:vertical {"
+            "height: 0;"
+            "border: none;"
+            "background: transparent;"
+            "}"
+        )
+        title_qss = f"color: {text_color}; font-size: 13px; font-weight: bold;"
         self.result_list.setStyleSheet(qss)
         if hasattr(self, "preview_text"):
             self.preview_text.setStyleSheet(preview_qss)

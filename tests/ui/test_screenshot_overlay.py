@@ -55,12 +55,91 @@ class TestScreenshotOverlay(unittest.TestCase):
             "thickness": 3,
         }
         text_action = {"type": "text", "pos": QPoint(40, 50), "text": "A"}
+        number_action = {"type": "number", "pos": QPoint(80, 90), "number": 1}
 
         ScreenshotOverlay._translate_action(line_action, QPoint(5, -3))
         ScreenshotOverlay._translate_action(text_action, QPoint(-2, 4))
+        ScreenshotOverlay._translate_action(number_action, QPoint(10, -20))
 
         self.assertEqual(line_action["points"], [QPoint(15, 7), QPoint(35, 17)])
         self.assertEqual(text_action["pos"], QPoint(38, 54))
+        self.assertEqual(number_action["pos"], QPoint(90, 70))
+
+    def test_number_text_color_contrasts_with_marker_background(self):
+        self.assertEqual(
+            ScreenshotOverlay._number_text_color(QColor("#FF3333")).name().upper(),
+            "#FFFFFF",
+        )
+        self.assertEqual(
+            ScreenshotOverlay._number_text_color(QColor("#3399FF")).name().upper(),
+            "#FFFFFF",
+        )
+        self.assertEqual(
+            ScreenshotOverlay._number_text_color(QColor("#FFCC00")).name().upper(),
+            "#000000",
+        )
+        self.assertEqual(
+            ScreenshotOverlay._number_text_color(QColor("#FFFFFF")).name().upper(),
+            "#000000",
+        )
+        self.assertEqual(
+            ScreenshotOverlay._number_text_color(QColor("#000000")).name().upper(),
+            "#FFFFFF",
+        )
+
+    def test_number_tool_adds_incrementing_movable_markers(self):
+        self.overlay.selection_rect = QRect(0, 0, 300, 200)
+        self.overlay.draw_mode = "number"
+
+        first_press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(50, 60),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        second_press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(120, 90),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+        self.overlay.mousePressEvent(first_press)
+        self.overlay.mousePressEvent(second_press)
+
+        self.assertEqual([a["number"] for a in self.overlay.draw_actions], [1, 2])
+        self.assertEqual(self.overlay._find_movable_action_index(QPoint(50, 60)), 0)
+        self.assertEqual(self.overlay._find_movable_action_index(QPoint(120, 90)), 1)
+
+    def test_left_click_outside_selection_with_annotations_keeps_selection(self):
+        self.overlay.selection_rect = QRect(20, 20, 120, 90)
+        original_rect = QRect(self.overlay.selection_rect)
+        self.overlay.draw_actions = [
+            {
+                "type": "number",
+                "color": QColor("#FF3333"),
+                "number": 1,
+                "pos": QPoint(60, 60),
+                "size": 26,
+                "thickness": 3,
+            }
+        ]
+
+        press_event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(220, 180),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+        self.overlay.mousePressEvent(press_event)
+
+        self.assertEqual(self.overlay.selection_rect, original_rect)
+        self.assertEqual(len(self.overlay.draw_actions), 1)
+        self.assertFalse(self.overlay.is_drawing)
 
     def test_direct_drag_existing_annotation_even_when_draw_tool_is_active(self):
         self.overlay.selection_rect = QRect(0, 0, 300, 200)
