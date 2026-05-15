@@ -3389,7 +3389,7 @@ dependencies = [
     { name = "pypinyin" },
     { name = "pyqt6" },
     { name = "pyqt6-fluent-widgets" },
-    { name = "pywin32" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "qrcode" },
     { name = "rapidocr-onnxruntime" },
 ]
@@ -3408,7 +3408,7 @@ requires-dist = [
     { name = "pypinyin", specifier = ">=0.51.0" },
     { name = "pyqt6", specifier = ">=6.10.2" },
     { name = "pyqt6-fluent-widgets", specifier = ">=1.11.1" },
-    { name = "pywin32", specifier = ">=311" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=311" },
     { name = "qrcode", specifier = ">=8.2" },
     { name = "rapidocr-onnxruntime", specifier = ">=1.4.4" },
 ]

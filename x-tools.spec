@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('logo.png', '.'), ('src/ui/check.svg', 'src/ui'), ('src/plugins', 'src/plugins')]
 binaries = [('Everything64.dll', '.')]
-hiddenimports = ['src.ui.hosts_window', 'src.ui.screenshot_overlay', 'src.ui.pinned_image_window', 'src.ui.capture_history_window', 'src.core.capture_history', 'src.core.custom_launch', 'src.plugins.hosts_tool', 'src.plugins.qr_tool', 'src.plugins.hash_tool', 'src.plugins.json_tool', 'src.plugins.url_tool', 'src.plugins.uuid_tool', 'src.plugins.capture_history_tool', 'src.plugins.custom_launch_tool', 'qrcode', 'cv2', 'rapidocr_onnxruntime']
+hiddenimports = ['src.ui.hosts_window', 'src.ui.screenshot_overlay', 'src.ui.pinned_image_window', 'src.ui.capture_history_window', 'src.ui.json_compare_window', 'src.core.capture_history', 'src.core.custom_launch', 'src.core.json_compare', 'src.platform.applications', 'src.platform.file_search', 'src.platform.hosts', 'src.platform.hotkeys', 'src.platform.runtime', 'src.platform.shell', 'src.platform.single_instance', 'src.platform.startup', 'src.platform.windowing', 'src.plugins.hosts_tool', 'src.plugins.qr_tool', 'src.plugins.hash_tool', 'src.plugins.json_tool', 'src.plugins.json_compare_tool', 'src.plugins.url_tool', 'src.plugins.uuid_tool', 'src.plugins.capture_history_tool', 'src.plugins.custom_launch_tool', 'qrcode', 'cv2', 'rapidocr_onnxruntime']
 tmp_ret = collect_all('rapidocr_onnxruntime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

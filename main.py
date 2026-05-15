@@ -1,10 +1,10 @@
 import sys
-import ctypes
 import time
 import atexit
 from PyQt6.QtWidgets import QApplication
 from src.core.logger import setup_logging, get_logger
 from src.core.metrics import metrics_store
+from src.platform.single_instance import SingleInstanceLock
 
 
 setup_logging()
@@ -15,11 +15,8 @@ from src.ui.search_window import SearchWindow
 def main():
     startup_start = time.perf_counter()
 
-    # Single Instance Check
-    kernel32 = ctypes.windll.kernel32
-    mutex_name = "Global\\XToolsSingletonMutex"
-    mutex = kernel32.CreateMutexW(None, False, mutex_name)
-    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    single_instance = SingleInstanceLock("Global\\XToolsSingletonMutex")
+    if not single_instance.acquire():
         # App is already running. For simplicity, just exit.
         # Ideally would bring existing window to front, but that requires more complex IPC.
         sys.exit(0)

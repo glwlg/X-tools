@@ -3,6 +3,17 @@ from typing import Any
 
 
 class PluginBase(ABC):
+    supported_platforms = ("all",)
+    required_capabilities = ()
+
+    def get_supported_platforms(self) -> tuple[str, ...]:
+        """Return platform IDs this plugin can run on, or ("all",)."""
+        return tuple(getattr(self, "supported_platforms", ("all",)))
+
+    def get_required_capabilities(self) -> tuple[str, ...]:
+        """Return platform capability IDs required by this plugin."""
+        return tuple(getattr(self, "required_capabilities", ()))
+
     @abstractmethod
     def get_name(self) -> str:
         """Returns the human-readable name of the plugin."""

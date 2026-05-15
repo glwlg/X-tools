@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class HashPlugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "Hash 生成器"
 

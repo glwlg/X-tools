@@ -18,6 +18,7 @@ from qframelesswindow import AcrylicWindow
 
 from src.core.capture_history import capture_history_manager
 from src.core.logger import get_logger
+from src.platform.shell import open_parent, open_path
 from src.ui.pinned_image_window import PinnedImageWindow
 
 
@@ -280,23 +281,16 @@ class CaptureHistoryWindow(AcrylicWindow):
         if not entry:
             return
         path = self._open_path_for_entry(entry)
-        try:
-            if path:
-                os.startfile(path)
-        except Exception as e:
-            logger.warning("Failed to open capture image: %s", e)
+        if path and not open_path(path):
+            logger.warning("Failed to open capture image: %s", path)
 
     def open_folder_selected(self):
         entry = self._current_entry()
         if not entry:
             return
         path = self._open_path_for_entry(entry)
-        folder = os.path.dirname(path)
-        try:
-            if folder and os.path.exists(folder):
-                os.startfile(folder)
-        except Exception as e:
-            logger.warning("Failed to open capture folder: %s", e)
+        if not open_parent(path):
+            logger.warning("Failed to open capture folder: %s", path)
 
     def delete_selected(self):
         entry_id = self._current_entry_id()

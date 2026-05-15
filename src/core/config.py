@@ -1,10 +1,10 @@
 import json
 import copy
-import winreg
 import sys
 import os
 from src.core.logger import get_logger
 from src.core.workflow_schema import DEFAULT_WORKFLOWS, normalize_workflows
+from src.platform.startup import set_startup_enabled
 
 
 logger = get_logger(__name__)
@@ -176,7 +176,6 @@ class ConfigManager:
         self.save_config()
 
     def set_startup(self, enable=True):
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "x-tools"
         exe_path = sys.executable  # For packaged app, sys.executable is the exe path
 
@@ -191,24 +190,13 @@ class ConfigManager:
             script_path = os.path.abspath(sys.argv[0])
             path_to_run = f'"{exe_path}" "{script_path}"'  # Run via python
 
-        try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS
-            )
-            if enable:
-                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, path_to_run)
-            else:
-                try:
-                    winreg.DeleteValue(key, app_name)
-                except FileNotFoundError:
-                    pass
-            winreg.CloseKey(key)
+        if set_startup_enabled(app_name, path_to_run, enable):
             self.config["run_on_startup"] = enable
             self.save_config()
             return True
-        except Exception as e:
-            logger.warning("Registry error: %s", e)
-            return False
+
+        logger.warning("Startup integration is not available on this platform.")
+        return False
 
 
 config_manager = ConfigManager()

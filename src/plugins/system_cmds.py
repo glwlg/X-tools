@@ -4,6 +4,9 @@ from src.core.plugin_base import PluginBase
 
 
 class SystemCommandsPlugin(PluginBase):
+    supported_platforms = ("windows",)
+    required_capabilities = ("system_commands",)
+
     def get_name(self):
         return "系统命令"
 

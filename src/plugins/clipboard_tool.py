@@ -4,6 +4,8 @@ from src.ui.clipboard_window import ClipboardWindow
 
 
 class ClipboardPlugin(PluginBase):
+    required_capabilities = ("clipboard",)
+
     def __init__(self):
         self.window = None
 

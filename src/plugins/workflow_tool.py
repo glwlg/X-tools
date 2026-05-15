@@ -10,6 +10,8 @@ ALLOWED_TEMPLATE_VARS = ("clipboard", "prev", "input")
 
 
 class WorkflowPlugin(PluginBase):
+    required_capabilities = ("clipboard",)
+
     def __init__(self):
         pass
 

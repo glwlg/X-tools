@@ -8,6 +8,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from src.core.config import config_manager
 from src.core.logger import get_logger
+from src.platform.shell import open_path
 
 
 logger = get_logger(__name__)
@@ -192,8 +193,7 @@ class CustomLaunchManager(QObject):
 
         try:
             if not args:
-                os.startfile(target)
-                return True
+                return open_path(target)
 
             argv = [target] + shlex.split(args, posix=False)
             subprocess.Popen(argv, cwd=cwd_value)

@@ -1,7 +1,6 @@
 import sys
 import os
 import threading
-import ctypes
 import json
 import time
 import difflib
@@ -42,19 +41,21 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import SearchLineEdit, ListWidget, setTheme, Theme, isDarkTheme
 from qframelesswindow import AcrylicWindow
 
-from src.core.everything import everything_client
-from src.core.app_scanner import app_scanner
 from src.core.config import config_manager
 from src.ui.settings_window import SettingsWindow
 from src.core.plugin_manager import plugin_manager
 from src.ui.screenshot_overlay import ScreenshotOverlay
 from src.ui.pinned_image_window import PinnedImageWindow
-from src.core.hotkey_manager import HotkeyManager
 from src.ui.network_monitor import NetworkMonitorWidget
 from src.core.clipboard_history import clipboard_history_manager
 from src.core.custom_launch import custom_launch_manager
 from src.core.logger import get_logger, export_diagnostics, get_log_dir
 from src.core.metrics import metrics_store
+from src.platform.applications import app_scanner
+from src.platform.file_search import file_search_provider
+from src.platform.hotkeys import create_hotkey_manager
+from src.platform.shell import open_parent, open_path
+from src.platform.windowing import force_foreground_window
 
 
 logger = get_logger(__name__)
@@ -71,9 +72,7 @@ class SearchThread(QThread):
     def run(self):
         custom_results = custom_launch_manager.search(self.query)
         app_results = app_scanner.search(self.query)
-        file_results = []
-        if everything_client:
-            file_results = everything_client.search(self.query)
+        file_results = file_search_provider.search(self.query)
         results = custom_results + app_results + file_results
         self.results_found.emit(self.request_id, self.query, results)
 
@@ -575,6 +574,9 @@ class SearchWindow(AcrylicWindow):
         if item_type == "hosts_cmd":
             return "打开 Hosts 管理中心，可编辑方案、拉取远程配置并应用到系统。"
 
+        if item_type == "json_compare_cmd":
+            return "打开 JSON 对比工具，可对比语义差异、格式化内容并复制差异报告。"
+
         if item_type == "qr_generate":
             return f"将根据以下内容生成二维码:\n{data.get('path', '')}"
 
@@ -636,6 +638,8 @@ class SearchWindow(AcrylicWindow):
             return self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon)
         if item_type == "hosts_cmd":
             return self.style().standardIcon(self.style().StandardPixmap.SP_DriveNetIcon)
+        if item_type == "json_compare_cmd":
+            return self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon)
         return self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon)
 
     def _item_kind(self, data):
@@ -667,6 +671,8 @@ class SearchWindow(AcrylicWindow):
             return "捕获历史"
         if item_type == "hosts_cmd":
             return "系统工具"
+        if item_type == "json_compare_cmd":
+            return "开发工具"
         return "操作"
 
     def _item_size_text(self, data):
@@ -1675,10 +1681,8 @@ class SearchWindow(AcrylicWindow):
         QSettings("x-tools", "network_monitor").setValue("is_visible", checked)
 
     def open_log_directory(self):
-        try:
-            os.startfile(get_log_dir())
-        except Exception as e:
-            logger.warning("Failed to open log directory: %s", e)
+        if not open_path(get_log_dir()):
+            logger.warning("Failed to open log directory")
 
     def export_diagnostics_package(self):
         try:
@@ -1695,7 +1699,7 @@ class SearchWindow(AcrylicWindow):
         self.settings_window.show()
 
     def init_hotkey(self):
-        self.hotkey_manager = HotkeyManager()
+        self.hotkey_manager = create_hotkey_manager()
         self._register_hotkeys_from_config()
         self.hotkey_manager.start()
 
@@ -1817,26 +1821,7 @@ class SearchWindow(AcrylicWindow):
             self.activateWindow()
             self.raise_()
 
-            try:
-                hwnd = int(self.winId())
-                foreground_window = ctypes.windll.user32.GetForegroundWindow()
-                current_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
-                foreground_thread_id = ctypes.windll.user32.GetWindowThreadProcessId(
-                    foreground_window, None
-                )
-
-                if current_thread_id != foreground_thread_id:
-                    ctypes.windll.user32.AttachThreadInput(
-                        foreground_thread_id, current_thread_id, True
-                    )
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-                    ctypes.windll.user32.AttachThreadInput(
-                        foreground_thread_id, current_thread_id, False
-                    )
-                else:
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-            except Exception:
-                pass
+            force_foreground_window(int(self.winId()))
 
             self.search_bar.setFocus()
             self.search_bar.deselect()
@@ -1965,6 +1950,8 @@ class SearchWindow(AcrylicWindow):
             elif item_type == "capture_entry":
                 pass
             elif item_type in {"capture_center", "capture_cmd"}:
+                pass
+            elif item_type == "json_compare_cmd":
                 pass
             elif item_type == "custom_launch":
                 pass
@@ -2163,6 +2150,13 @@ class SearchWindow(AcrylicWindow):
             plugin.handle_action(data["path"])
             self._record_item_usage(data)
             self.hide()
+        elif item_type == "json_compare_cmd":
+            plugin = data.get("plugin") or self.plugin_mode
+            if plugin is None:
+                return
+            plugin.handle_action(data["path"])
+            self._record_item_usage(data)
+            self.hide()
         elif item_type == "custom_launch":
             launch_id = str(data.get("launch_id") or data.get("path") or "").strip()
             ok = custom_launch_manager.launch(launch_id)
@@ -2318,7 +2312,7 @@ class SearchWindow(AcrylicWindow):
                 if target_folder and os.path.exists(target_folder):
                     open_target_folder_action = QAction("打开目标目录", self)
                     open_target_folder_action.triggered.connect(
-                        lambda folder=target_folder: os.startfile(folder)
+                        lambda folder=target_folder: open_path(folder)
                     )
                     menu.addAction(open_target_folder_action)
         elif path and data.get("type") in {"file", "app"}:
@@ -2361,22 +2355,19 @@ class SearchWindow(AcrylicWindow):
         if not path:
             return
         try:
-            folder = os.path.dirname(path)
-            if os.path.exists(folder):
-                os.startfile(folder)
+            open_parent(path)
         except Exception as e:
             logger.warning("Error opening folder: %s", e)
 
     def launch_item(self, path, data=None):
         if path:
-            try:
-                os.startfile(path)
+            if open_path(path):
                 self._record_item_usage(
                     data if isinstance(data, dict) else {"path": path, "type": "file"}
                 )
                 self.hide()
-            except Exception as e:
-                logger.warning("Error launching %s: %s", path, e)
+            else:
+                logger.warning("Error launching %s", path)
 
     def focusOutEvent(self, event):
         if self._search_dragging_window:

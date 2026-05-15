@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class CalculatorPlugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "计算器"
 

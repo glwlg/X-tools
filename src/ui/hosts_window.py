@@ -1,5 +1,4 @@
 import os
-import tempfile
 import json
 import re
 import difflib
@@ -49,8 +48,9 @@ from qfluentwidgets import (
 )
 from qframelesswindow import AcrylicWindow
 from src.core.logger import get_logger
+from src.platform.hosts import HostsWriteResult, get_hosts_path, write_hosts_content
 
-HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
+HOSTS_PATH = get_hosts_path()
 DB_PATH = os.path.join(os.path.expanduser("~"), ".x-tools", "hosts_profiles.json")
 
 XTOOLS_START_MARKER = "# ================= X-TOOLS HOSTS START ================="
@@ -959,87 +959,26 @@ class HostsWindow(AcrylicWindow):
         if not self._show_apply_preview(final_content):
             return
 
-        import subprocess
-
-        temp_fd, temp_path = tempfile.mkstemp(suffix=".txt", text=True)
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            f.write(final_content)
-
-        result_fd, result_path = tempfile.mkstemp(suffix=".res", text=True)
-        os.close(result_fd)
-
         if hasattr(self, "file_watcher") and HOSTS_PATH in self.file_watcher.files():
             self.file_watcher.removePath(HOSTS_PATH)
 
         self._is_applying = True
-
-        ps_script_fd, ps_script_path = tempfile.mkstemp(suffix=".ps1", text=True)
-        with os.fdopen(ps_script_fd, "w", encoding="utf-8") as f:
-            f.write(f"""$ErrorActionPreference = 'Stop'
-try {{
-    Copy-Item -Path '{temp_path}' -Destination '{HOSTS_PATH}' -Force
-    Out-File -FilePath '{result_path}' -InputObject 'SUCCESS' -Encoding utf8
-    exit 0
-}} catch {{
-    Out-File -FilePath '{result_path}' -InputObject $_.Exception.Message -Encoding utf8
-    exit 1
-}}
-""")
-
-        success = False
-        error_detail = ""
+        write_result = None
         try:
-            cmd = f"Start-Process powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"{ps_script_path}\"' -Verb RunAs -Wait -WindowStyle Hidden"
-            subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    cmd,
-                ],
-                capture_output=True,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            write_result = write_hosts_content(final_content)
+        finally:
+            if (
+                hasattr(self, "file_watcher")
+                and os.path.exists(HOSTS_PATH)
+                and HOSTS_PATH not in self.file_watcher.files()
+            ):
+                self.file_watcher.addPath(HOSTS_PATH)
+            self._is_applying = False
 
-            if os.path.exists(result_path):
-                with open(result_path, "r", encoding="utf-8-sig") as rf:
-                    result_text = rf.read().strip()
-                    if "SUCCESS" in result_text:
-                        success = True
-                    else:
-                        error_detail = result_text if result_text else "未知执行错误"
-            else:
-                error_detail = "无法获取执行结果文件（可能是用户拒绝了 UAC 请求）"
-        except Exception as e:
-            error_detail = str(e)
-            success = False
+        if write_result is None:
+            write_result = HostsWriteResult(False, "未知执行错误")
 
-        try:
-            os.unlink(ps_script_path)
-        except Exception:
-            pass
-        try:
-            os.unlink(temp_path)
-        except Exception:
-            pass
-        try:
-            os.unlink(result_path)
-        except Exception:
-            pass
-
-        if (
-            hasattr(self, "file_watcher")
-            and os.path.exists(HOSTS_PATH)
-            and HOSTS_PATH not in self.file_watcher.files()
-        ):
-            self.file_watcher.addPath(HOSTS_PATH)
-
-        self._is_applying = False
-
-        if success:
+        if write_result.success:
             if "系统 Hosts" in self.profiles:
                 self.profiles["系统 Hosts"]["content"] = final_content
                 self.save_profiles()
@@ -1056,7 +995,7 @@ try {{
             QMessageBox.warning(
                 self,
                 "错误",
-                f"需要管理员权限才能修改 Hosts 文件。\n详情: {error_detail}",
+                f"需要管理员权限才能修改 Hosts 文件。\n详情: {write_result.error}",
             )
 
     def import_profiles(self):

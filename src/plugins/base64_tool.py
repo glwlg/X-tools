@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class Base64Plugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "Base64 编码/解码"
 

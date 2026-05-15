@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class CustomLaunchPlugin(PluginBase):
+    required_capabilities = ("custom_launch", "open_path")
+
     def get_name(self):
         return "自定义启动项"
 

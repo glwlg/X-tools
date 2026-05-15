@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class UuidPlugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "UUID 生成器"
 

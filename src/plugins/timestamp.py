@@ -4,6 +4,8 @@ from src.core.plugin_base import PluginBase
 
 
 class TimestampPlugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "时间戳转换"
 

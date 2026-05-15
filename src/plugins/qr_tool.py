@@ -12,6 +12,8 @@ logger = get_logger(__name__)
 
 
 class QRCodePlugin(PluginBase):
+    required_capabilities = ("pinned_image",)
+
     def __init__(self):
         self.pinned_windows = []
 

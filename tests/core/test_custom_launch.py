@@ -51,13 +51,13 @@ class TestCustomLaunchManager(unittest.TestCase):
 
         self.assertEqual(self.manager.search("secret"), [])
 
-    def test_launch_uses_startfile_without_args(self):
+    def test_launch_uses_platform_shell_without_args(self):
         entry = self.manager.save_item({"name": "Docs", "target": "C:/Docs"})
 
-        with patch("src.core.custom_launch.os.startfile") as startfile_mock:
+        with patch("src.core.custom_launch.open_path", return_value=True) as open_mock:
             self.assertTrue(self.manager.launch(entry["id"]))
 
-        startfile_mock.assert_called_once_with("C:/Docs")
+        open_mock.assert_called_once_with("C:/Docs")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ dependencies = [
     "pypinyin>=0.51.0",
     "pyqt6>=6.10.2",
     "pyqt6-fluent-widgets>=1.11.1",
-    "pywin32>=311",
+    "pywin32>=311; sys_platform == 'win32'",
     "qrcode>=8.2",
     "rapidocr-onnxruntime>=1.4.4",
 ]

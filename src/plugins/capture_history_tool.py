@@ -4,11 +4,14 @@ from PyQt6.QtGui import QPixmap
 
 from src.core.capture_history import capture_history_manager
 from src.core.plugin_base import PluginBase
+from src.platform.shell import open_parent, open_path
 from src.ui.capture_history_window import CaptureHistoryWindow
 from src.ui.pinned_image_window import PinnedImageWindow
 
 
 class CaptureHistoryPlugin(PluginBase):
+    required_capabilities = ("clipboard", "open_path", "pinned_image")
+
     def __init__(self):
         self.window = None
         self._pinned_windows = []
@@ -122,12 +125,8 @@ class CaptureHistoryPlugin(PluginBase):
             if not entry:
                 return "打开失败，捕获记录可能已失效"
             path = self._entry_path(entry)
-            if path:
-                try:
-                    os.startfile(path)
-                    return "已打开捕获图片"
-                except Exception:
-                    return "打开失败，捕获记录可能已失效"
+            if path and open_path(path):
+                return "已打开捕获图片"
             return "打开失败，捕获记录可能已失效"
 
         if action_key.startswith("folder:"):
@@ -136,13 +135,8 @@ class CaptureHistoryPlugin(PluginBase):
             if not entry:
                 return "打开失败，捕获记录可能已失效"
             path = self._entry_path(entry)
-            folder = os.path.dirname(path)
-            if folder and os.path.exists(folder):
-                try:
-                    os.startfile(folder)
-                    return "已打开捕获目录"
-                except Exception:
-                    return "打开失败，捕获记录可能已失效"
+            if open_parent(path):
+                return "已打开捕获目录"
             return "打开失败，捕获记录可能已失效"
 
         return ""

@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 from src.core.plugin_base import PluginBase
 from src.core.logger import get_logger
+from src.platform.runtime import plugin_supported, unsupported_plugin_reason
 
 
 logger = get_logger(__name__)
@@ -75,23 +76,43 @@ class PluginManager:
                             and issubclass(obj, PluginBase)
                             and obj is not PluginBase
                         ):
-                            self.plugins.append(obj())
-                            logger.info(
-                                "[PluginManager] Loaded plugin: %s", obj.__name__
-                            )
+                            plugin = obj()
+                            self.plugins.append(plugin)
+                            if plugin_supported(plugin):
+                                logger.info(
+                                    "[PluginManager] Loaded plugin: %s", obj.__name__
+                                )
+                            else:
+                                logger.info(
+                                    "[PluginManager] Loaded plugin but disabled on this platform: %s (%s)",
+                                    obj.__name__,
+                                    unsupported_plugin_reason(plugin),
+                                )
                 except Exception as e:
                     logger.exception(
                         "[PluginManager] Failed to load plugin %s: %s", filename, e
                     )
 
-    def get_plugins(self, enabled_only=True):
+    def get_plugins(self, enabled_only=True, supported_only=True):
+        plugins = self.plugins
+
+        if supported_only:
+            plugins = [p for p in plugins if plugin_supported(p)]
+
         if not enabled_only:
-            return self.plugins
+            return plugins
 
         from src.core.config import config_manager
 
         enabled_map = config_manager.config.get("plugins_enabled", {})
-        return [p for p in self.plugins if enabled_map.get(p.get_name(), True)]
+        return [p for p in plugins if enabled_map.get(p.get_name(), True)]
+
+    def get_unsupported_plugins(self):
+        return [
+            (plugin, unsupported_plugin_reason(plugin))
+            for plugin in self.plugins
+            if not plugin_supported(plugin)
+        ]
 
     def is_plugin_enabled(self, plugin_name):
         from src.core.config import config_manager

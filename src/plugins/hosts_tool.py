@@ -3,6 +3,8 @@ from src.ui.hosts_window import HostsWindow
 
 
 class HostsPlugin(PluginBase):
+    required_capabilities = ("hosts",)
+
     def __init__(self):
         self.hosts_window = None
 

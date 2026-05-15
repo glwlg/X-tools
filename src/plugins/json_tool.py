@@ -3,6 +3,8 @@ from src.core.plugin_base import PluginBase
 
 
 class JsonPlugin(PluginBase):
+    required_capabilities = ()
+
     def get_name(self):
         return "JSON 格式化"
 
