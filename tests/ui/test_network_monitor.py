@@ -57,6 +57,54 @@ class TestNetworkMonitorWidget(unittest.TestCase):
 
         self.assertEqual(taskbar_rect, QRect(0, 1032, 1920, 48))
 
+    def test_adaptive_metrics_follow_horizontal_taskbar_height(self):
+        metrics = NetworkMonitorWidget._adaptive_metrics(QRect(0, 1032, 1920, 48))
+
+        self.assertEqual(metrics["target_height"], 39)
+        self.assertEqual(metrics["font_pixel_size"], 13)
+        self.assertEqual(metrics["horizontal_margin"], 7)
+        self.assertEqual(metrics["vertical_margin"], 3)
+        self.assertEqual(metrics["column_spacing"], 3)
+
+    def test_adaptive_metrics_grow_with_taller_taskbar(self):
+        metrics = NetworkMonitorWidget._adaptive_metrics(QRect(0, 1380, 2560, 60))
+
+        self.assertEqual(metrics["target_height"], 49)
+        self.assertEqual(metrics["font_pixel_size"], 16)
+        self.assertEqual(metrics["horizontal_margin"], 8)
+        self.assertEqual(metrics["vertical_margin"], 4)
+
+    def test_adaptive_metrics_use_vertical_taskbar_width(self):
+        metrics = NetworkMonitorWidget._adaptive_metrics(QRect(0, 0, 80, 1080))
+
+        self.assertEqual(metrics["target_height"], 66)
+        self.assertEqual(metrics["font_pixel_size"], 22)
+        self.assertEqual(metrics["horizontal_margin"], 11)
+        self.assertEqual(metrics["vertical_margin"], 5)
+
+    def test_rect_covers_rect_accepts_exact_and_near_fullscreen_bounds(self):
+        screen_rect = QRect(0, 0, 1920, 1080)
+
+        self.assertTrue(
+            NetworkMonitorWidget._rect_covers_rect(
+                QRect(0, 0, 1920, 1080), screen_rect
+            )
+        )
+        self.assertTrue(
+            NetworkMonitorWidget._rect_covers_rect(
+                QRect(1, 1, 1919, 1079), screen_rect, tolerance=2
+            )
+        )
+
+    def test_rect_covers_rect_rejects_non_fullscreen_window(self):
+        screen_rect = QRect(0, 0, 1920, 1080)
+
+        self.assertFalse(
+            NetworkMonitorWidget._rect_covers_rect(
+                QRect(100, 80, 1200, 800), screen_rect
+            )
+        )
+
     def test_taskbar_left_anchor_point_uses_left_edge_of_horizontal_taskbar(self):
         anchored = NetworkMonitorWidget._taskbar_left_anchor_point(
             QRect(0, 1040, 1920, 40),

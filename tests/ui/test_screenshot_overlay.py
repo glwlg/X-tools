@@ -311,6 +311,33 @@ class TestScreenshotOverlay(unittest.TestCase):
         auto_save_mock.assert_not_called()
         close_mock.assert_called_once()
 
+    def test_selected_pixmap_uses_native_pixels_for_high_dpi_capture(self):
+        screen_pixmap = QPixmap(200, 160)
+        screen_pixmap.setDevicePixelRatio(2.0)
+        screen_pixmap.fill(QColor("#112233"))
+
+        self.overlay.screen_pixmap = screen_pixmap
+        self.overlay.screen_image = screen_pixmap.toImage()
+        self.overlay.screen_virtual_rect = QRect(0, 0, 100, 80)
+        self.overlay.screen_capture_sources = [
+            {
+                "geometry": QRect(0, 0, 100, 80),
+                "pixmap": screen_pixmap,
+                "scale": 2.0,
+            }
+        ]
+        self.overlay.screen_scale = 2.0
+        self.overlay.selection_rect = QRect(10, 12, 30, 20)
+
+        selected = self.overlay.get_selected_pixmap()
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.width(), 60)
+        self.assertEqual(selected.height(), 40)
+        self.assertEqual(selected.devicePixelRatio(), 2.0)
+        self.assertEqual(selected.deviceIndependentSize().width(), 30)
+        self.assertEqual(selected.deviceIndependentSize().height(), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

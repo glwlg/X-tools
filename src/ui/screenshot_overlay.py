@@ -67,6 +67,9 @@ class ScreenshotOverlay(QWidget):
 
         self.screen_pixmap = None
         self.screen_image = None
+        self.screen_virtual_rect = QRect()
+        self.screen_capture_sources = []
+        self.screen_scale = 1.0
 
         self.start_pos = QPoint()
         self.end_pos = QPoint()
@@ -879,6 +882,37 @@ class ScreenshotOverlay(QWidget):
         logger.warning("Failed to save screenshot (%s): %s", source, output_path)
         return None
 
+    @staticmethod
+    def _capture_scale(screen, pixmap):
+        geometry = screen.geometry()
+        scale_values = [
+            float(screen.devicePixelRatio()),
+            float(pixmap.devicePixelRatio()),
+        ]
+        if geometry.width() > 0:
+            scale_values.append(float(pixmap.width()) / float(geometry.width()))
+        if geometry.height() > 0:
+            scale_values.append(float(pixmap.height()) / float(geometry.height()))
+
+        return max(1.0, max(scale_values))
+
+    @staticmethod
+    def _scaled_rect(rect: QRect, scale: float) -> QRect:
+        x1 = round(rect.x() * scale)
+        y1 = round(rect.y() * scale)
+        x2 = round((rect.x() + rect.width()) * scale)
+        y2 = round((rect.y() + rect.height()) * scale)
+        return QRect(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+
+    def _native_rect(self, rect: QRect) -> QRect:
+        return self._scaled_rect(rect, self.screen_scale)
+
+    def _native_point(self, point: QPoint) -> QPoint:
+        return QPoint(
+            round(point.x() * self.screen_scale),
+            round(point.y() * self.screen_scale),
+        )
+
     def save_selection_as(self):
         output_path = self._prompt_manual_save_path()
         if output_path:
@@ -918,14 +952,36 @@ class ScreenshotOverlay(QWidget):
         for screen in screens[1:]:
             virtual_rect = virtual_rect.united(screen.geometry())
 
-        self.screen_pixmap = QPixmap(virtual_rect.size())
+        captures = []
+        self.screen_scale = 1.0
+        for screen in screens:
+            shot = screen.grabWindow(0)
+            scale = self._capture_scale(screen, shot)
+            if abs(float(shot.devicePixelRatio()) - scale) > 0.01:
+                shot.setDevicePixelRatio(scale)
+            captures.append(
+                {
+                    "geometry": QRect(screen.geometry()),
+                    "pixmap": shot,
+                    "scale": scale,
+                }
+            )
+            self.screen_scale = max(self.screen_scale, scale)
+
+        native_size = QSize(
+            max(1, round(virtual_rect.width() * self.screen_scale)),
+            max(1, round(virtual_rect.height() * self.screen_scale)),
+        )
+        self.screen_virtual_rect = QRect(virtual_rect)
+        self.screen_capture_sources = captures
+        self.screen_pixmap = QPixmap(native_size)
+        self.screen_pixmap.setDevicePixelRatio(self.screen_scale)
         self.screen_pixmap.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(self.screen_pixmap)
-        for screen in screens:
-            shot = screen.grabWindow(0)
-            offset = screen.geometry().topLeft() - virtual_rect.topLeft()
-            painter.drawPixmap(offset, shot)
+        for capture in captures:
+            offset = capture["geometry"].topLeft() - virtual_rect.topLeft()
+            painter.drawPixmap(offset, capture["pixmap"])
         painter.end()
 
         self.screen_image = self.screen_pixmap.toImage()
@@ -996,7 +1052,9 @@ class ScreenshotOverlay(QWidget):
                 QPainter.CompositionMode.CompositionMode_SourceOver
             )
             painter.drawPixmap(
-                self.selection_rect, self.screen_pixmap, self.selection_rect
+                self.selection_rect,
+                self.screen_pixmap,
+                self._native_rect(self.selection_rect),
             )
 
             # Draw border
@@ -1077,20 +1135,22 @@ class ScreenshotOverlay(QWidget):
         # Draw magnifier
         if not self.current_mouse_pos.isNull() and self.screen_image:
             cursor_pos = self.current_mouse_pos
+            native_cursor_pos = self._native_point(cursor_pos)
             zoom_size = 15  # Must be odd to have a true center (15x15 pixels)
             scale = 12
 
-            if self.screen_image.valid(cursor_pos):
-                c = self.screen_image.pixelColor(cursor_pos)
+            if self.screen_image.valid(native_cursor_pos):
+                c = self.screen_image.pixelColor(native_cursor_pos)
 
                 zoom_rect = QRect(
-                    cursor_pos.x() - zoom_size // 2,
-                    cursor_pos.y() - zoom_size // 2,
+                    native_cursor_pos.x() - zoom_size // 2,
+                    native_cursor_pos.y() - zoom_size // 2,
                     zoom_size,
                     zoom_size,
                 )
 
                 zoomed_pixmap = self.screen_pixmap.copy(zoom_rect)
+                zoomed_pixmap.setDevicePixelRatio(1.0)
                 zoomed_pixmap = zoomed_pixmap.scaled(
                     zoom_size * scale,
                     zoom_size * scale,
@@ -1635,8 +1695,9 @@ class ScreenshotOverlay(QWidget):
             and not self.current_mouse_pos.isNull()
             and self.screen_image
         ):
-            if self.screen_image.valid(self.current_mouse_pos):
-                c = self.screen_image.pixelColor(self.current_mouse_pos)
+            native_mouse_pos = self._native_point(self.current_mouse_pos)
+            if self.screen_image.valid(native_mouse_pos):
+                c = self.screen_image.pixelColor(native_mouse_pos)
                 text = (
                     f"rgb({c.red()}, {c.green()}, {c.blue()})"
                     if self.color_format == "rgb"
@@ -1657,7 +1718,7 @@ class ScreenshotOverlay(QWidget):
         if self.text_input.isVisible():
             self.commit_text_action()
 
-        pixmap = self.screen_pixmap.copy(self.selection_rect)
+        pixmap = self._copy_selected_native_pixmap()
         if hasattr(self, "draw_actions") and self.draw_actions:
             painter = QPainter(pixmap)
             painter.translate(-self.selection_rect.topLeft())
@@ -1665,6 +1726,34 @@ class ScreenshotOverlay(QWidget):
             painter.end()
 
         return pixmap
+
+    def _copy_selected_native_pixmap(self):
+        selection_rect = QRect(self.selection_rect)
+        selection_global = QRect(selection_rect)
+        selection_global.translate(self.screen_virtual_rect.topLeft())
+
+        matches = []
+        for capture in self.screen_capture_sources:
+            screen_rect = capture["geometry"]
+            intersection = selection_global.intersected(screen_rect)
+            if (
+                not intersection.isNull()
+                and intersection.width() > 0
+                and intersection.height() > 0
+            ):
+                matches.append((capture, intersection))
+
+        if len(matches) == 1:
+            capture, intersection = matches[0]
+            source_rect = QRect(intersection)
+            source_rect.translate(-capture["geometry"].topLeft())
+            pixmap = capture["pixmap"].copy(
+                self._scaled_rect(source_rect, capture["scale"])
+            )
+            pixmap.setDevicePixelRatio(capture["scale"])
+            return pixmap
+
+        return self.screen_pixmap.copy(self._native_rect(selection_rect))
 
     def pin_selection(self):
         pixmap = self.get_selected_pixmap()
